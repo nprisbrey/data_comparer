@@ -236,31 +236,36 @@ func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
 		markEntireDirectories(child, otherSet)
 	}
 
-	// Check if any files DIRECTLY in this directory exist in the other set
-	anyDirectFilesExistInOtherSet := false
-	if len(node.Files) > 0 {
-		for _, file := range node.Files {
-			// Check if this specific file exists in the other set (by name or hash)
-			if _, exists := otherSet.NameMap[file.Name]; exists {
-				anyDirectFilesExistInOtherSet = true
-				break
-			}
-			if _, exists := otherSet.HashMap[file.Hash]; exists {
-				anyDirectFilesExistInOtherSet = true
+	// Build the full path for this directory
+	var pathParts []string
+	current := node
+	for current != nil && current.Name != "" {
+		pathParts = append([]string{current.Name}, pathParts...)
+		current = current.Parent
+	}
+	dirPath := strings.Join(pathParts, string(filepath.Separator))
+
+	// Check if ANY file from this directory path exists in the other set
+	// This includes files that might not be in our unique list (e.g., files with same content)
+	anyFileFromDirExistsInOtherSet := false
+	if dirPath != "" {
+		for _, file := range otherSet.Files {
+			if strings.HasPrefix(file.RelativePath, dirPath+string(filepath.Separator)) || file.RelativePath == dirPath {
+				anyFileFromDirExistsInOtherSet = true
 				break
 			}
 		}
 	}
 
 	// A directory is "entire" if:
-	// 1. None of the files directly in this directory exist in the other set, AND
+	// 1. No files from this directory path exist in the other set, AND
 	// 2. All children (if any) are also "entire"
 	// 3. EXCEPT the root node, which should never be marked as "entire"
 	if node.Name == "" {
 		// Root node should never be marked as "entire"
 		node.IsEntireDir = false
-	} else if !anyDirectFilesExistInOtherSet {
-		// No direct files from this directory exist in the other set
+	} else if !anyFileFromDirExistsInOtherSet {
+		// No files from this directory path exist in the other set
 		if len(node.Children) == 0 {
 			// Leaf directory with no matches in other set
 			node.IsEntireDir = true
@@ -276,7 +281,7 @@ func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
 			node.IsEntireDir = allChildrenEntire
 		}
 	} else {
-		// Some files directly in this directory exist in the other set, so not entire
+		// Some files from this directory path exist in the other set, so not entire
 		node.IsEntireDir = false
 	}
 
