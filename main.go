@@ -217,7 +217,7 @@ func buildSmartTree(files []*FileInfo, otherSet *FileSet) *TreeNode {
 	}
 
 	// Mark directories that are entirely missing
-	markEntireDirectories(root)
+	markEntireDirectories(root, otherSet)
 
 	// Remove empty directories
 	removeEmptyDirectories(root)
@@ -226,32 +226,60 @@ func buildSmartTree(files []*FileInfo, otherSet *FileSet) *TreeNode {
 }
 
 // markEntireDirectories marks directories where all contents are missing
-func markEntireDirectories(node *TreeNode) {
+func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
 	if !node.IsDir {
 		return
 	}
 
 	// Recursively process children first
 	for _, child := range node.Children {
-		markEntireDirectories(child)
+		markEntireDirectories(child, otherSet)
 	}
 
-	// A directory is "entire" if it has files or if all its children are "entire"
+	// Check if any files DIRECTLY in this directory exist in the other set
+	anyDirectFilesExistInOtherSet := false
 	if len(node.Files) > 0 {
-		node.IsEntireDir = true
-		return
-	}
-
-	if len(node.Children) > 0 {
-		allChildrenEntire := true
-		for _, child := range node.Children {
-			if !child.IsEntireDir {
-				allChildrenEntire = false
+		for _, file := range node.Files {
+			// Check if this specific file exists in the other set (by name or hash)
+			if _, exists := otherSet.NameMap[file.Name]; exists {
+				anyDirectFilesExistInOtherSet = true
+				break
+			}
+			if _, exists := otherSet.HashMap[file.Hash]; exists {
+				anyDirectFilesExistInOtherSet = true
 				break
 			}
 		}
-		node.IsEntireDir = allChildrenEntire
 	}
+
+	// A directory is "entire" if:
+	// 1. None of the files directly in this directory exist in the other set, AND
+	// 2. All children (if any) are also "entire"
+	// 3. EXCEPT the root node, which should never be marked as "entire"
+	if node.Name == "" {
+		// Root node should never be marked as "entire"
+		node.IsEntireDir = false
+	} else if !anyDirectFilesExistInOtherSet {
+		// No direct files from this directory exist in the other set
+		if len(node.Children) == 0 {
+			// Leaf directory with no matches in other set
+			node.IsEntireDir = true
+		} else {
+			// Directory with children - only mark as entire if ALL children are entire
+			allChildrenEntire := true
+			for _, child := range node.Children {
+				if !child.IsEntireDir {
+					allChildrenEntire = false
+					break
+				}
+			}
+			node.IsEntireDir = allChildrenEntire
+		}
+	} else {
+		// Some files directly in this directory exist in the other set, so not entire
+		node.IsEntireDir = false
+	}
+
 }
 
 // printTree prints the tree structure with proper formatting
@@ -263,7 +291,7 @@ func printTree(node *TreeNode, prefix string, isLast bool, showDetails bool, nam
 		}
 
 		if node.IsDir {
-			if node.IsEntireDir && len(node.Files) == 0 && len(node.Children) > 0 {
+			if node.IsEntireDir {
 				fmt.Printf("%s%s📁 %s/ (entire directory)\n", prefix, connector, node.Name)
 			} else {
 				fmt.Printf("%s%s📁 %s/\n", prefix, connector, node.Name)
@@ -275,6 +303,11 @@ func printTree(node *TreeNode, prefix string, isLast bool, showDetails bool, nam
 		} else {
 			prefix += "│   "
 		}
+	}
+
+	// If this directory is marked as "entire", don't print its contents
+	if node.IsEntireDir {
+		return
 	}
 
 	// Print files in this directory
@@ -300,18 +333,16 @@ func printTree(node *TreeNode, prefix string, isLast bool, showDetails bool, nam
 		fmt.Printf("%s%s%s\n", prefix, connector, fileOutput)
 	}
 
-	// Print subdirectories (only if not marked as entire directory at this level)
-	if !node.IsEntireDir || len(node.Files) > 0 {
-		var childNames []string
-		for name := range node.Children {
-			childNames = append(childNames, name)
-		}
-		sort.Strings(childNames)
+	// Print subdirectories
+	var childNames []string
+	for name := range node.Children {
+		childNames = append(childNames, name)
+	}
+	sort.Strings(childNames)
 
-		for i, name := range childNames {
-			isLastChild := i == len(childNames)-1
-			printTree(node.Children[name], prefix, isLastChild, showDetails, nameMappings)
-		}
+	for i, name := range childNames {
+		isLastChild := i == len(childNames)-1
+		printTree(node.Children[name], prefix, isLastChild, showDetails, nameMappings)
 	}
 }
 
