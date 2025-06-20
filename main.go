@@ -477,7 +477,7 @@ func main() {
 
 	// First tree: Files with same name but different content
 	if len(result.SameNameDifferentHash) > 0 {
-		fmt.Printf("⚠️  Files with same name but different content (%d files):\n", len(result.SameNameDifferentHash))
+		fmt.Printf("⚠️  Files with same name but different content (%d files) - Set 2 (%s) → Set 1 (%s):\n", len(result.SameNameDifferentHash), strings.Join(set2Dirs, ", "), strings.Join(set1Dirs, ", "))
 		fmt.Println("=" + strings.Repeat("=", 50))
 		fmt.Println()
 
@@ -491,7 +491,7 @@ func main() {
 
 	// Second tree: Files unique to set 2
 	if len(result.UniqueToSet2) > 0 {
-		fmt.Printf("📋 Files in Set 2 with no match in Set 1 (%d files):\n", len(result.UniqueToSet2))
+		fmt.Printf("📋 Files unique to Set 2 (%s) - not found in Set 1 (%s) (%d files):\n", strings.Join(set2Dirs, ", "), strings.Join(set1Dirs, ", "), len(result.UniqueToSet2))
 		fmt.Println("=" + strings.Repeat("=", 50))
 		fmt.Println()
 
@@ -506,7 +506,7 @@ func main() {
 	// Third tree: Files unique to set 1 (optional)
 	if showUniqueToSet1 {
 		if len(result.UniqueToSet1) > 0 {
-			fmt.Printf("📋 Files in Set 1 with no match in Set 2 (%d files):\n", len(result.UniqueToSet1))
+			fmt.Printf("📋 Files unique to Set 1 (%s) - not found in Set 2 (%s) (%d files):\n", strings.Join(set1Dirs, ", "), strings.Join(set2Dirs, ", "), len(result.UniqueToSet1))
 			fmt.Println("=" + strings.Repeat("=", 50))
 			fmt.Println()
 
