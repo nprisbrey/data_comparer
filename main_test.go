@@ -2184,36 +2184,36 @@ func TestWalkDirectoriesAdditional(t *testing.T) {
 	t.Run("walk function error handling", func(t *testing.T) {
 		// Test error handling in the walk function
 		tmpDir := t.TempDir()
-		
+
 		// Create a file that will trigger an error during walk
 		problemFile := filepath.Join(tmpDir, "problem")
 		err := os.WriteFile(problemFile, []byte("test"), 0644)
 		if err != nil {
 			t.Fatalf("Failed to create problem file: %v", err)
 		}
-		
+
 		// Make the directory unreadable after creating the file
 		output := captureOutput(t, func() {
 			// Create a subdirectory that will be difficult to process
 			subdir := filepath.Join(tmpDir, "subdir")
 			os.Mkdir(subdir, 0755)
-			
+
 			// Create a file in the subdirectory
 			subfile := filepath.Join(subdir, "file.txt")
 			os.WriteFile(subfile, []byte("content"), 0644)
-			
+
 			// Now walk the directory - should process normally
 			fileSet, err := walkDirectories([]string{tmpDir})
 			if err != nil {
 				t.Errorf("walkDirectories should handle normal cases: %v", err)
 			}
-			
+
 			// Should find the files
 			if len(fileSet.Files) < 2 {
 				t.Errorf("Expected at least 2 files, got %d", len(fileSet.Files))
 			}
 		})
-		
+
 		_ = output
 	})
 
@@ -2236,7 +2236,7 @@ func TestWalkDirectoriesAdditional(t *testing.T) {
 		if len(fileSet.Files) != 1 {
 			t.Errorf("Expected 1 file, got %d", len(fileSet.Files))
 		}
-		
+
 		// The relative path should be set
 		if fileSet.Files[0].RelativePath == "" {
 			t.Error("RelativePath should not be empty")
