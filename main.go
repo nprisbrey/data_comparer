@@ -266,10 +266,10 @@ func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
 		node.IsEntireDir = false
 	} else if !anyFileFromDirExistsInOtherSet {
 		// No files from this directory path exist in the other set
-		if len(node.Children) == 0 {
-			// Leaf directory with no matches in other set
+		if len(node.Children) == 0 && len(node.Files) > 0 {
+			// Leaf directory with files but no matches in other set
 			node.IsEntireDir = true
-		} else {
+		} else if len(node.Children) > 0 {
 			// Directory with children - only mark as entire if ALL children are entire
 			allChildrenEntire := true
 			for _, child := range node.Children {
@@ -279,6 +279,9 @@ func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
 				}
 			}
 			node.IsEntireDir = allChildrenEntire
+		} else {
+			// Empty directory with no files and no children
+			node.IsEntireDir = false
 		}
 	} else {
 		// Some files from this directory path exist in the other set, so not entire
