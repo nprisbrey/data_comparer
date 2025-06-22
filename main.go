@@ -185,11 +185,21 @@ func removeEmptyDirectories(node *TreeNode) bool {
 }
 
 // buildSmartTree creates a tree structure that's smart about showing entire directories
-func buildSmartTree(files []*FileInfo, otherSet *FileSet) *TreeNode {
+func buildSmartTree(files []*FileInfo, sourceSet *FileSet, otherSet *FileSet) *TreeNode {
 	root := &TreeNode{
 		Name:     "",
 		IsDir:    true,
 		Children: make(map[string]*TreeNode),
+	}
+
+	// Build a map of directory paths to check which directories exist in sourceSet
+	directoriesInSourceSet := make(map[string]bool)
+	for _, file := range sourceSet.Files {
+		dir := filepath.Dir(file.RelativePath)
+		for dir != "." && dir != "" {
+			directoriesInSourceSet[dir] = true
+			dir = filepath.Dir(dir)
+		}
 	}
 
 	for _, file := range files {
@@ -217,7 +227,7 @@ func buildSmartTree(files []*FileInfo, otherSet *FileSet) *TreeNode {
 	}
 
 	// Mark directories that are entirely missing
-	markEntireDirectories(root, otherSet)
+	markEntireDirectoriesNew(root, sourceSet, otherSet, directoriesInSourceSet)
 
 	// Remove empty directories
 	removeEmptyDirectories(root)
@@ -225,15 +235,36 @@ func buildSmartTree(files []*FileInfo, otherSet *FileSet) *TreeNode {
 	return root
 }
 
-// markEntireDirectories marks directories where all contents are missing
-func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
+// collectAllFilesUnderNode collects all files under a given tree node (including subdirectories)
+func collectAllFilesUnderNode(node *TreeNode) []*FileInfo {
+	var files []*FileInfo
+
+	// Add files from this node
+	files = append(files, node.Files...)
+
+	// Recursively add files from all children
+	for _, child := range node.Children {
+		files = append(files, collectAllFilesUnderNode(child)...)
+	}
+
+	return files
+}
+
+// markEntireDirectoriesNew is the new implementation that properly handles partial matches
+func markEntireDirectoriesNew(node *TreeNode, sourceSet *FileSet, otherSet *FileSet, directoriesInSourceSet map[string]bool) {
 	if !node.IsDir {
 		return
 	}
 
 	// Recursively process children first
 	for _, child := range node.Children {
-		markEntireDirectories(child, otherSet)
+		markEntireDirectoriesNew(child, sourceSet, otherSet, directoriesInSourceSet)
+	}
+
+	// Skip root node
+	if node.Name == "" {
+		node.IsEntireDir = false
+		return
 	}
 
 	// Build the full path for this directory
@@ -245,49 +276,98 @@ func markEntireDirectories(node *TreeNode, otherSet *FileSet) {
 	}
 	dirPath := strings.Join(pathParts, string(filepath.Separator))
 
-	// Check if ANY file from this directory path exists in the other set
-	// This includes files that might not be in our unique list (e.g., files with same content)
-	anyFileFromDirExistsInOtherSet := false
-	if dirPath != "" {
-		for _, file := range otherSet.Files {
-			if strings.HasPrefix(file.RelativePath, dirPath+string(filepath.Separator)) || file.RelativePath == dirPath {
-				anyFileFromDirExistsInOtherSet = true
+	// Check if this exact directory exists in the source set
+	if !directoriesInSourceSet[dirPath] {
+		// This directory doesn't exist in source set at all, so it can't be "entire"
+		node.IsEntireDir = false
+		return
+	}
+
+	// Count how many files from this directory in sourceSet have no match in otherSet
+	filesInDirCount := 0
+	filesWithoutMatchCount := 0
+
+	for _, sourceFile := range sourceSet.Files {
+		// Check if this file is directly in our directory (not in subdirectories)
+		if filepath.Dir(sourceFile.RelativePath) == dirPath {
+			filesInDirCount++
+			// Check if its content exists in the other set
+			if _, hashExists := otherSet.HashMap[sourceFile.Hash]; !hashExists {
+				filesWithoutMatchCount++
+			}
+		}
+	}
+
+	// A directory can be marked as "entire" only if:
+	// 1. ALL files directly in this directory (not subdirs) have no match in otherSet (or there are no direct files)
+	// 2. ALL child directories are marked as entire (or there are no child directories)
+	// 3. There is at least SOME content (files or subdirs) in this directory
+	allDirectFilesUnmatched := filesInDirCount == 0 || (filesInDirCount > 0 && filesInDirCount == filesWithoutMatchCount)
+
+	allChildrenAreEntire := true
+	hasChildDirs := false
+	for _, child := range node.Children {
+		if child.IsDir {
+			hasChildDirs = true
+			if !child.IsEntireDir {
+				allChildrenAreEntire = false
 				break
 			}
 		}
 	}
 
-	// A directory is "entire" if:
-	// 1. No files from this directory path exist in the other set, AND
-	// 2. All children (if any) are also "entire"
-	// 3. EXCEPT the root node, which should never be marked as "entire"
-	if node.Name == "" {
-		// Root node should never be marked as "entire"
-		node.IsEntireDir = false
-	} else if !anyFileFromDirExistsInOtherSet {
-		// No files from this directory path exist in the other set
-		if len(node.Children) == 0 && len(node.Files) > 0 {
-			// Leaf directory with files but no matches in other set
-			node.IsEntireDir = true
-		} else if len(node.Children) > 0 {
-			// Directory with children - only mark as entire if ALL children are entire
-			allChildrenEntire := true
-			for _, child := range node.Children {
-				if !child.IsEntireDir {
-					allChildrenEntire = false
-					break
-				}
-			}
-			node.IsEntireDir = allChildrenEntire
-		} else {
-			// Empty directory with no files and no children
-			node.IsEntireDir = false
-		}
+	// Directory must have some content (either files or subdirectories)
+	hasContent := filesInDirCount > 0 || hasChildDirs
+
+	if hasContent && allDirectFilesUnmatched && (!hasChildDirs || allChildrenAreEntire) {
+		node.IsEntireDir = true
 	} else {
-		// Some files from this directory path exist in the other set, so not entire
 		node.IsEntireDir = false
 	}
+}
 
+// markEntireDirectories marks directories where all contents are missing
+func markEntireDirectories(node *TreeNode, sourceSet *FileSet, otherSet *FileSet) {
+	if !node.IsDir {
+		return
+	}
+
+	// Recursively process children first
+	for _, child := range node.Children {
+		markEntireDirectories(child, sourceSet, otherSet)
+	}
+
+	// Skip root node
+	if node.Name == "" {
+		node.IsEntireDir = false
+		return
+	}
+
+	// A directory can be marked as "entire" only if:
+	// 1. It has no child directories, OR all child directories are marked as "entire"
+	// 2. It has files (either directly or in subdirectories)
+	// 3. This is a directory that's actually being shown in our tree (not just a parent of shown files)
+
+	// Check if all children (if any) are marked as entire
+	allChildrenAreEntire := true
+	hasChildren := len(node.Children) > 0
+
+	for _, child := range node.Children {
+		if child.IsDir && !child.IsEntireDir {
+			allChildrenAreEntire = false
+			break
+		}
+	}
+
+	// A leaf directory (no subdirectories) with files
+	if !hasChildren && len(node.Files) > 0 {
+		node.IsEntireDir = true
+	} else if hasChildren && allChildrenAreEntire {
+		// A directory where ALL subdirectories are marked as entire
+		node.IsEntireDir = true
+	} else {
+		node.IsEntireDir = false
+	}
 }
 
 // printTree prints the tree structure with proper formatting
@@ -498,7 +578,7 @@ func main() {
 		fmt.Println("=" + strings.Repeat("=", 50))
 		fmt.Println()
 
-		tree2 := buildSmartTree(result.UniqueToSet2, set1)
+		tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
 		printTree(tree2, "", true, showDetails, nil)
 		fmt.Println()
 	} else {
@@ -513,7 +593,7 @@ func main() {
 			fmt.Println("=" + strings.Repeat("=", 50))
 			fmt.Println()
 
-			tree3 := buildSmartTree(result.UniqueToSet1, set2)
+			tree3 := buildSmartTree(result.UniqueToSet1, set1, set2)
 			printTree(tree3, "", true, showDetails, nil)
 			fmt.Println()
 		} else {
