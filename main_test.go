@@ -384,7 +384,13 @@ func TestBuildSmartTree(t *testing.T) {
 		HashMap: make(map[string][]*FileInfo),
 	}
 
-	tree := buildSmartTree(files, otherSet)
+	// Create a source set (the set these files came from)
+	sourceSet := &FileSet{
+		Files:   files,
+		NameMap: make(map[string][]*FileInfo),
+		HashMap: make(map[string][]*FileInfo),
+	}
+	tree := buildSmartTree(files, sourceSet, otherSet)
 
 	if len(tree.Children) != 2 {
 		t.Errorf("Root should have 2 child directories, got %d", len(tree.Children))
@@ -482,7 +488,17 @@ func TestMarkEntireDirectories(t *testing.T) {
 		NameMap: make(map[string][]*FileInfo),
 		HashMap: make(map[string][]*FileInfo),
 	}
-	markEntireDirectories(root, dummyFileSet)
+	// Create a sourceSet with the files from the tree
+	sourceSet := &FileSet{
+		Files: []*FileInfo{
+			{RelativePath: "dir1/file1.txt", Hash: "hash1"},
+			{RelativePath: "dir1/file2.txt", Hash: "hash2"},
+			{RelativePath: "dir2/child/child.txt", Hash: "hash3"},
+		},
+		NameMap: make(map[string][]*FileInfo),
+		HashMap: make(map[string][]*FileInfo),
+	}
+	markEntireDirectories(root, sourceSet, dummyFileSet)
 
 	if !dirWithFiles.IsEntireDir {
 		t.Error("Directory with files should be marked as entire")
@@ -656,8 +672,8 @@ func TestIntegrationComplexScenario(t *testing.T) {
 	}
 
 	// Test tree building with this complex scenario
-	tree2 := buildSmartTree(result.UniqueToSet2, set1)
-	tree1 := buildSmartTree(result.UniqueToSet1, set2)
+	tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
+	tree1 := buildSmartTree(result.UniqueToSet1, set1, set2)
 
 	// Verify trees are built correctly
 	if len(tree2.Children) == 0 {
@@ -807,7 +823,7 @@ func TestMainLogic(t *testing.T) {
 	}
 
 	if len(result.UniqueToSet2) > 0 {
-		tree2 := buildSmartTree(result.UniqueToSet2, set1)
+		tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
 		output := captureOutput(t, func() {
 			printTree(tree2, "", true, false, nil)
 		})
@@ -956,7 +972,7 @@ func TestIntegrationMainWorkflow(t *testing.T) {
 		}
 
 		if len(result.UniqueToSet2) > 0 {
-			tree2 := buildSmartTree(result.UniqueToSet2, set1)
+			tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
 			output := captureOutput(t, func() {
 				printTree(tree2, "", true, showDetails, nil)
 			})
@@ -966,7 +982,7 @@ func TestIntegrationMainWorkflow(t *testing.T) {
 		}
 
 		if showUniqueToSet1 && len(result.UniqueToSet1) > 0 {
-			tree3 := buildSmartTree(result.UniqueToSet1, set2)
+			tree3 := buildSmartTree(result.UniqueToSet1, set1, set2)
 			output := captureOutput(t, func() {
 				printTree(tree3, "", true, showDetails, nil)
 			})
@@ -1086,7 +1102,15 @@ func TestMarkEntireDirectoriesEdgeCases(t *testing.T) {
 			NameMap: make(map[string][]*FileInfo),
 			HashMap: make(map[string][]*FileInfo),
 		}
-		markEntireDirectories(root, dummyFileSet)
+		// Create source set for nested test
+		sourceSet := &FileSet{
+			Files: []*FileInfo{
+				{RelativePath: "parent/child/grandchild/file.txt", Hash: "hash1"},
+			},
+			NameMap: make(map[string][]*FileInfo),
+			HashMap: make(map[string][]*FileInfo),
+		}
+		markEntireDirectories(root, sourceSet, dummyFileSet)
 
 		if !grandchild.IsEntireDir {
 			t.Error("Grandchild with files should be marked as entire")
@@ -1139,7 +1163,15 @@ func TestMarkEntireDirectoriesEdgeCases(t *testing.T) {
 			NameMap: make(map[string][]*FileInfo),
 			HashMap: make(map[string][]*FileInfo),
 		}
-		markEntireDirectories(root, dummyFileSet)
+		// Create source set for mixed test
+		sourceSet := &FileSet{
+			Files: []*FileInfo{
+				{RelativePath: "parent/child1/file.txt", Hash: "hash1"},
+			},
+			NameMap: make(map[string][]*FileInfo),
+			HashMap: make(map[string][]*FileInfo),
+		}
+		markEntireDirectories(root, sourceSet, dummyFileSet)
 
 		if !child1.IsEntireDir {
 			t.Error("Child1 with files should be marked as entire")
@@ -1448,7 +1480,13 @@ func TestMarkEntireDirectoriesEmptyDirectory(t *testing.T) {
 			NameMap: make(map[string][]*FileInfo),
 			HashMap: make(map[string][]*FileInfo),
 		}
-		markEntireDirectories(root, dummyFileSet)
+		// Create empty source set for empty directory test
+		sourceSet := &FileSet{
+			Files:   []*FileInfo{},
+			NameMap: make(map[string][]*FileInfo),
+			HashMap: make(map[string][]*FileInfo),
+		}
+		markEntireDirectories(root, sourceSet, dummyFileSet)
 
 		// Empty directory with no children should not be marked as entire
 		if emptyDir.IsEntireDir {
@@ -2001,7 +2039,7 @@ func TestMainFunctionCoverage(t *testing.T) {
 						fmt.Println("=" + strings.Repeat("=", 50))
 						fmt.Println()
 
-						tree2 := buildSmartTree(result.UniqueToSet2, set1)
+						tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
 						printTree(tree2, "", true, tc.showDetails, nil)
 						fmt.Println()
 					} else {
@@ -2016,7 +2054,7 @@ func TestMainFunctionCoverage(t *testing.T) {
 							fmt.Println("=" + strings.Repeat("=", 50))
 							fmt.Println()
 
-							tree3 := buildSmartTree(result.UniqueToSet1, set2)
+							tree3 := buildSmartTree(result.UniqueToSet1, set1, set2)
 							printTree(tree3, "", true, tc.showDetails, nil)
 							fmt.Println()
 						} else {
@@ -2142,10 +2180,20 @@ func TestMarkEntireDirectoriesAdditional(t *testing.T) {
 			HashMap: make(map[string][]*FileInfo),
 		}
 
-		markEntireDirectories(root, otherSet)
+		// For this test, we don't have a sourceSet since we're testing the old behavior
+		// The new behavior requires checking hash matches, so this test needs updating
+		sourceSet := &FileSet{
+			Files:   []*FileInfo{{Name: "file.txt", RelativePath: "testdir/file.txt", Hash: "hash1"}},
+			NameMap: make(map[string][]*FileInfo),
+			HashMap: make(map[string][]*FileInfo),
+		}
 
-		if dir.IsEntireDir {
-			t.Error("Directory should not be marked as entire when files from same path exist in other set")
+		markEntireDirectories(root, sourceSet, otherSet)
+
+		// With the new logic, the directory SHOULD be marked as entire because
+		// there's no hash match between the files in the directory
+		if !dir.IsEntireDir {
+			t.Error("Directory should be marked as entire when no files have matching hashes")
 		}
 	})
 }
@@ -2271,10 +2319,19 @@ func TestMarkEntireDirectoriesCompleteCoverage(t *testing.T) {
 			HashMap: make(map[string][]*FileInfo),
 		}
 
-		markEntireDirectories(root, otherSet)
+		// Create source set for the new signature
+		sourceSet := &FileSet{
+			Files:   []*FileInfo{{Name: "content.txt", RelativePath: "file.txt/content.txt", Hash: "hash1"}},
+			NameMap: make(map[string][]*FileInfo),
+			HashMap: make(map[string][]*FileInfo),
+		}
 
-		if dir.IsEntireDir {
-			t.Error("Directory should not be marked as entire when a file with the same path exists")
+		markEntireDirectories(root, sourceSet, otherSet)
+
+		// With the new logic, the directory SHOULD be marked as entire because
+		// there's no hash match (the file in otherSet is not a directory content)
+		if !dir.IsEntireDir {
+			t.Error("Directory should be marked as entire when no files have matching hashes")
 		}
 	})
 
@@ -2292,7 +2349,12 @@ func TestMarkEntireDirectoriesCompleteCoverage(t *testing.T) {
 		}
 
 		// Should return immediately without errors
-		markEntireDirectories(fileNode, otherSet)
+		sourceSet := &FileSet{
+			Files:   []*FileInfo{},
+			NameMap: make(map[string][]*FileInfo),
+			HashMap: make(map[string][]*FileInfo),
+		}
+		markEntireDirectories(fileNode, sourceSet, otherSet)
 
 		if fileNode.IsEntireDir {
 			t.Error("Non-directory node should never be marked as entire")
