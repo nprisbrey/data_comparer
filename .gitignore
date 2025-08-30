@@ -1,1 +1,3 @@
 coverage.*
+# Release files
+dir-compare-*
