@@ -2763,3 +2763,213 @@ func TestWindowsPressEnterFunctionality(t *testing.T) {
 	os.Stdin = oldStdin
 	r.Close()
 }
+
+// Test cases for walkDirectoriesWithLimit function
+func TestWalkDirectoriesWithLimit(t *testing.T) {
+	t.Run("limit functionality", func(t *testing.T) {
+		structure := map[string]string{
+			"file1.txt": "content1",
+			"file2.txt": "content2",
+			"file3.txt": "content3",
+			"file4.txt": "content4",
+			"file5.txt": "content5",
+		}
+		tmpDir := createTempDir(t, structure)
+
+		// Test with limit of 3
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, 3)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit() error = %v", err)
+		}
+
+		if len(fileSet.Files) != 3 {
+			t.Errorf("Expected exactly 3 files, got %d", len(fileSet.Files))
+		}
+
+		// Verify all files have proper structure
+		for _, file := range fileSet.Files {
+			if file.Hash == "" {
+				t.Error("File hash should not be empty")
+			}
+			if file.Name == "" {
+				t.Error("File name should not be empty")
+			}
+			if file.Size <= 0 {
+				t.Error("File size should be positive")
+			}
+		}
+	})
+
+	t.Run("no limit (-1)", func(t *testing.T) {
+		structure := map[string]string{
+			"file1.txt": "content1",
+			"file2.txt": "content2",
+			"file3.txt": "content3",
+		}
+		tmpDir := createTempDir(t, structure)
+
+		// Test with no limit
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit() error = %v", err)
+		}
+
+		if len(fileSet.Files) != 3 {
+			t.Errorf("Expected all 3 files, got %d", len(fileSet.Files))
+		}
+	})
+
+	t.Run("limit larger than file count", func(t *testing.T) {
+		structure := map[string]string{
+			"file1.txt": "content1",
+			"file2.txt": "content2",
+		}
+		tmpDir := createTempDir(t, structure)
+
+		// Test with limit larger than available files
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, 10)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit() error = %v", err)
+		}
+
+		if len(fileSet.Files) != 2 {
+			t.Errorf("Expected 2 files (all available), got %d", len(fileSet.Files))
+		}
+	})
+}
+
+// Test cases for runPreview function
+func TestRunPreview(t *testing.T) {
+	t.Run("preview with different file categories", func(t *testing.T) {
+		// Create two temporary directories with different file sets
+		set1Structure := map[string]string{
+			"common.txt":   "same content",
+			"modified.txt": "original content",
+			"unique1.txt":  "unique to set1",
+		}
+		set2Structure := map[string]string{
+			"common.txt":   "same content",
+			"modified.txt": "modified content",
+			"unique2.txt":  "unique to set2",
+		}
+
+		set1Dir := createTempDir(t, set1Structure)
+		set2Dir := createTempDir(t, set2Structure)
+
+		// Capture output from runPreview
+		output := captureOutput(t, func() {
+			runPreview([]string{set1Dir}, []string{set2Dir}, 5, true, true, true, true)
+		})
+
+		// Verify preview mode indicators
+		if !strings.Contains(output, "PREVIEW MODE") {
+			t.Error("Output should contain 'PREVIEW MODE'")
+		}
+		if !strings.Contains(output, "Processing first 5 files as sample") {
+			t.Error("Output should mention processing sample files")
+		}
+
+		// Verify all categories are shown when enabled
+		if !strings.Contains(output, "Modified files found") {
+			t.Error("Output should show modified files section")
+		}
+		if !strings.Contains(output, "Files unique to Set 2") {
+			t.Error("Output should show unique to set 2 section")
+		}
+		if !strings.Contains(output, "Files unique to Set 1") {
+			t.Error("Output should show unique to set 1 section")
+		}
+
+		// Verify summary section
+		if !strings.Contains(output, "Preview Summary:") {
+			t.Error("Output should contain preview summary")
+		}
+		if !strings.Contains(output, "To see complete results, run the same command without --preview") {
+			t.Error("Output should contain instruction for full results")
+		}
+	})
+
+	t.Run("preview with selective options", func(t *testing.T) {
+		set1Structure := map[string]string{
+			"file1.txt": "content1",
+		}
+		set2Structure := map[string]string{
+			"file2.txt": "content2",
+		}
+
+		set1Dir := createTempDir(t, set1Structure)
+		set2Dir := createTempDir(t, set2Structure)
+
+		// Test with only showUniqueToSet2 enabled
+		output := captureOutput(t, func() {
+			runPreview([]string{set1Dir}, []string{set2Dir}, 3, false, false, false, true)
+		})
+
+		// Should show unique to set 2 but not other categories
+		if !strings.Contains(output, "Files unique to Set 2") {
+			t.Error("Output should show unique to set 2 section")
+		}
+		if strings.Contains(output, "Modified files found") {
+			t.Error("Output should not show modified files section when disabled")
+		}
+		if strings.Contains(output, "Files unique to Set 1") {
+			t.Error("Output should not show unique to set 1 section when disabled")
+		}
+	})
+
+	t.Run("preview with custom count", func(t *testing.T) {
+		structure := map[string]string{
+			"file1.txt": "content1",
+			"file2.txt": "content2",
+		}
+
+		set1Dir := createTempDir(t, structure)
+		set2Dir := createTempDir(t, structure)
+
+		// Test with custom preview count
+		output := captureOutput(t, func() {
+			runPreview([]string{set1Dir}, []string{set2Dir}, 1, false, false, false, false)
+		})
+
+		if !strings.Contains(output, "Processing first 1 files as sample") {
+			t.Error("Output should mention processing 1 file as sample")
+		}
+		if !strings.Contains(output, "Sample size: 1 files from each directory set") {
+			t.Error("Output should show sample size of 1 in summary")
+		}
+	})
+}
+
+// Test cases for preview-related command line argument parsing
+func TestPreviewArgumentParsing(t *testing.T) {
+	// We can't easily test the full main() function since it calls os.Exit()
+	// and interacts with command line args, but we can test the preview logic
+	// indirectly by ensuring the functions work correctly
+
+	t.Run("walkDirectoriesWithLimit preserves walkDirectories behavior", func(t *testing.T) {
+		structure := map[string]string{
+			"test.txt": "test content",
+		}
+		tmpDir := createTempDir(t, structure)
+
+		// Test that walkDirectoriesWithLimit(-1) equals walkDirectories()
+		set1, err1 := walkDirectories([]string{tmpDir})
+		set2, err2 := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+
+		if err1 != nil || err2 != nil {
+			t.Fatalf("Errors: walkDirectories=%v, walkDirectoriesWithLimit=%v", err1, err2)
+		}
+
+		if len(set1.Files) != len(set2.Files) {
+			t.Errorf("File counts don't match: walkDirectories=%d, walkDirectoriesWithLimit=%d",
+				len(set1.Files), len(set2.Files))
+		}
+
+		// Compare file contents (assuming same order which should be true)
+		if len(set1.Files) > 0 && len(set2.Files) > 0 {
+			if set1.Files[0].Hash != set2.Files[0].Hash {
+				t.Error("File hashes don't match between methods")
+			}
+		}
+	})
+}

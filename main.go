@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -65,6 +66,11 @@ func hashFile(filePath string) (string, error) {
 
 // walkDirectories recursively walks through directories and builds a FileSet
 func walkDirectories(dirs []string) (*FileSet, error) {
+	return walkDirectoriesWithLimit(dirs, -1)
+}
+
+// walkDirectoriesWithLimit recursively walks through directories and builds a FileSet with optional file limit
+func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
 	fileSet := &FileSet{
 		Files:   make([]*FileInfo, 0),
 		NameMap: make(map[string][]*FileInfo),
@@ -111,6 +117,11 @@ func walkDirectories(dirs []string) (*FileSet, error) {
 			fileSet.Files = append(fileSet.Files, fileInfo)
 			fileSet.NameMap[info.Name()] = append(fileSet.NameMap[info.Name()], fileInfo)
 			fileSet.HashMap[hash] = append(fileSet.HashMap[hash], fileInfo)
+
+			// Check if we've reached the limit (if set)
+			if limit > 0 && len(fileSet.Files) >= limit {
+				return filepath.SkipAll
+			}
 
 			return nil
 		})
@@ -563,6 +574,18 @@ func runInteractiveMode(execName string) ([]string, []string, bool, bool, bool, 
 		set2Dirs[i] = strings.TrimSpace(set2Dirs[i])
 	}
 
+	// Show preview
+	fmt.Println()
+	fmt.Println("📋 Let's show you a quick preview with the first 10 files...")
+	fmt.Println()
+	runPreview(set1Dirs, set2Dirs, 10, showDetails, showModified, showUniqueToSet1, showUniqueToSet2)
+
+	fmt.Println()
+	if !readYesNo("Continue with full scan? (y/n): ") {
+		fmt.Println("Exiting...")
+		os.Exit(0)
+	}
+
 	fmt.Println()
 	return set1Dirs, set2Dirs, showModified, showUniqueToSet2, showUniqueToSet1, showDetails
 }
@@ -596,6 +619,8 @@ func main() {
 			fmt.Println("  --show-modified   Show files with same name but different content")
 			fmt.Println("  --show-unique-2   Show files unique to set 2")
 			fmt.Println("  --show-unique-1   Show files unique to set 1")
+			fmt.Println("  --preview         Show preview with first 10 files")
+			fmt.Println("  --preview-count N Set number of files to process in preview mode")
 			fmt.Println()
 			fmt.Println("Example:")
 			fmt.Printf("  %s %s %s\n", execName, multiExample1, multiExample2)
@@ -611,6 +636,8 @@ func main() {
 		set2Dirs = strings.Split(os.Args[2], ",")
 
 		// Parse flags
+		var isPreview bool
+		var previewCount int = 10 // default preview count
 		for i := 3; i < len(os.Args); i++ {
 			switch os.Args[i] {
 			case "--details":
@@ -621,7 +648,26 @@ func main() {
 				showUniqueToSet2 = true
 			case "--show-modified":
 				showModified = true
+			case "--preview":
+				isPreview = true
+			case "--preview-count":
+				if i+1 < len(os.Args) {
+					if count, err := strconv.Atoi(os.Args[i+1]); err != nil || count < 1 {
+						fmt.Printf("Invalid preview count: %s. Using default of 10.\n", os.Args[i+1])
+						previewCount = 10
+					} else {
+						previewCount = count
+					}
+					i++ // skip next argument
+				}
+				isPreview = true
 			}
+		}
+
+		// If preview mode, run preview and exit
+		if isPreview {
+			runPreview(set1Dirs, set2Dirs, previewCount, showDetails, showModified, showUniqueToSet1, showUniqueToSet2)
+			return
 		}
 
 		// Clean up directory paths
@@ -775,4 +821,95 @@ func formatSize(size int64) string {
 	} else {
 		return fmt.Sprintf("%.2f GB", float64(size)/(1024.0*1024.0*1024.0))
 	}
+}
+
+// runPreview runs the tool in preview mode with limited file processing
+func runPreview(set1Dirs, set2Dirs []string, previewCount int, showDetails, showModified, showUniqueToSet1, showUniqueToSet2 bool) {
+	fmt.Println("⚡ Directory Comparison Tool - PREVIEW MODE")
+	fmt.Println("=" + strings.Repeat("=", 45))
+	fmt.Printf("📋 Processing first %d files as sample\n", previewCount)
+	fmt.Println()
+
+	fmt.Printf("📂 Set 1 directories: %s\n", strings.Join(set1Dirs, ", "))
+	fmt.Printf("📂 Set 2 directories: %s\n", strings.Join(set2Dirs, ", "))
+	fmt.Println()
+
+	fmt.Println("🔍 Analyzing first files in set 1...")
+	set1, err := walkDirectoriesWithLimit(set1Dirs, previewCount)
+	if err != nil {
+		fmt.Printf("❌ Error analyzing first set: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("   Processed %d files\n", len(set1.Files))
+
+	fmt.Println("🔍 Analyzing first files in set 2...")
+	set2, err := walkDirectoriesWithLimit(set2Dirs, previewCount)
+	if err != nil {
+		fmt.Printf("❌ Error analyzing second set: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("   Processed %d files\n", len(set2.Files))
+
+	fmt.Println("🔍 Comparing file sets...")
+	result := compareFileSets(set1, set2)
+
+	fmt.Println()
+	fmt.Println("━━━ PREVIEW RESULTS ━━━")
+
+	// Show results for enabled categories
+	if showModified {
+		if len(result.SameNameDifferentHash) > 0 {
+			fmt.Printf("⚠️  Modified files found (%d in sample):\n", len(result.SameNameDifferentHash))
+			fmt.Println("─" + strings.Repeat("─", 30))
+			tree1 := buildTree(result.SameNameDifferentHash)
+			printTree(tree1, "", true, showDetails, result.NameMappings)
+			fmt.Println()
+		} else {
+			fmt.Println("✅ No modified files found in this sample.")
+			fmt.Println()
+		}
+	}
+
+	if showUniqueToSet2 {
+		if len(result.UniqueToSet2) > 0 {
+			fmt.Printf("📋 Files unique to Set 2 (%d in sample):\n", len(result.UniqueToSet2))
+			fmt.Println("─" + strings.Repeat("─", 30))
+			tree2 := buildTree(result.UniqueToSet2)
+			printTree(tree2, "", true, showDetails, nil)
+			fmt.Println()
+		} else {
+			fmt.Println("✅ No files unique to Set 2 found in this sample.")
+			fmt.Println()
+		}
+	}
+
+	if showUniqueToSet1 {
+		if len(result.UniqueToSet1) > 0 {
+			fmt.Printf("📋 Files unique to Set 1 (%d in sample):\n", len(result.UniqueToSet1))
+			fmt.Println("─" + strings.Repeat("─", 30))
+			tree3 := buildTree(result.UniqueToSet1)
+			printTree(tree3, "", true, showDetails, nil)
+			fmt.Println()
+		} else {
+			fmt.Println("✅ No files unique to Set 1 found in this sample.")
+			fmt.Println()
+		}
+	}
+
+	// Summary and next steps
+	fmt.Println("📊 Preview Summary:")
+	fmt.Printf("   • Sample size: %d files from each directory set\n", previewCount)
+	fmt.Printf("   • Files processed from Set 1: %d\n", len(set1.Files))
+	fmt.Printf("   • Files processed from Set 2: %d\n", len(set2.Files))
+	if showModified {
+		fmt.Printf("   • Modified files in sample: %d\n", len(result.SameNameDifferentHash))
+	}
+	if showUniqueToSet2 {
+		fmt.Printf("   • Unique to Set 2 in sample: %d\n", len(result.UniqueToSet2))
+	}
+	if showUniqueToSet1 {
+		fmt.Printf("   • Unique to Set 1 in sample: %d\n", len(result.UniqueToSet1))
+	}
+	fmt.Println()
+	fmt.Println("💡 To see complete results, run the same command without --preview")
 }
