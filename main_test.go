@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Test helper functions
@@ -2972,4 +2974,552 @@ func TestPreviewArgumentParsing(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Benchmark tests for performance comparison
+func BenchmarkWalkDirectoriesWithLimit(b *testing.B) {
+	// Create a directory with many small files for benchmarking
+	structure := make(map[string]string)
+	for i := 0; i < 100; i++ {
+		structure[fmt.Sprintf("file_%d.txt", i)] = fmt.Sprintf("content_%d", i)
+		structure[fmt.Sprintf("subdir_%d/file_%d.txt", i%10, i)] = fmt.Sprintf("nested_content_%d", i)
+	}
+	tmpDir := createTempDir(b, structure)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+		if err != nil {
+			b.Fatalf("walkDirectoriesWithLimit error: %v", err)
+		}
+	}
+}
+
+// Benchmark with a larger dataset to show parallelization benefits
+func BenchmarkWalkDirectoriesLargeDataset(b *testing.B) {
+	// Create a directory with many files - enough to trigger parallelization
+	structure := make(map[string]string)
+	// Create more files with larger content to make hashing more expensive
+	content := strings.Repeat("This is test content for benchmarking parallel hashing performance. ", 100) // ~6KB per file
+
+	for i := 0; i < 500; i++ {
+		structure[fmt.Sprintf("file_%d.txt", i)] = content + fmt.Sprintf("_unique_%d", i)
+		structure[fmt.Sprintf("subdir_%d/file_%d.txt", i%20, i)] = content + fmt.Sprintf("_nested_%d", i)
+	}
+	tmpDir := createTempDir(b, structure)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := walkDirectories([]string{tmpDir})
+		if err != nil {
+			b.Fatalf("walkDirectories error: %v", err)
+		}
+	}
+}
+
+// Benchmark the optimized version on same large dataset
+func BenchmarkWalkDirectoriesWithLimitLargeDataset(b *testing.B) {
+	// Create the same large dataset
+	structure := make(map[string]string)
+	content := strings.Repeat("This is test content for benchmarking parallel hashing performance. ", 100) // ~6KB per file
+
+	for i := 0; i < 500; i++ {
+		structure[fmt.Sprintf("file_%d.txt", i)] = content + fmt.Sprintf("_unique_%d", i)
+		structure[fmt.Sprintf("subdir_%d/file_%d.txt", i%20, i)] = content + fmt.Sprintf("_nested_%d", i)
+	}
+	tmpDir := createTempDir(b, structure)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+		if err != nil {
+			b.Fatalf("walkDirectoriesWithLimit error: %v", err)
+		}
+	}
+}
+
+// Test the threshold behavior between sequential and parallel processing
+func TestParallelizationThreshold(t *testing.T) {
+	t.Run("19 files should use sequential", func(t *testing.T) {
+		structure := make(map[string]string)
+		for i := 0; i < 19; i++ {
+			structure[fmt.Sprintf("file%d.txt", i)] = fmt.Sprintf("content%d", i)
+		}
+		tmpDir := createTempDir(t, structure)
+
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit error: %v", err)
+		}
+		if len(fileSet.Files) != 19 {
+			t.Errorf("Expected 19 files, got %d", len(fileSet.Files))
+		}
+	})
+
+	t.Run("20 files should use parallel", func(t *testing.T) {
+		structure := make(map[string]string)
+		for i := 0; i < 20; i++ {
+			structure[fmt.Sprintf("file%d.txt", i)] = fmt.Sprintf("content%d", i)
+		}
+		tmpDir := createTempDir(t, structure)
+
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit error: %v", err)
+		}
+		if len(fileSet.Files) != 20 {
+			t.Errorf("Expected 20 files, got %d", len(fileSet.Files))
+		}
+	})
+
+	t.Run("21 files should use parallel", func(t *testing.T) {
+		structure := make(map[string]string)
+		for i := 0; i < 21; i++ {
+			structure[fmt.Sprintf("file%d.txt", i)] = fmt.Sprintf("content%d", i)
+		}
+		tmpDir := createTempDir(t, structure)
+
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit error: %v", err)
+		}
+		if len(fileSet.Files) != 21 {
+			t.Errorf("Expected 21 files, got %d", len(fileSet.Files))
+		}
+	})
+}
+
+// Test that small workloads use sequential processing
+func TestSequentialProcessingHeuristic(t *testing.T) {
+	// Create a small dataset (under 20 files) that should trigger sequential processing
+	structure := map[string]string{
+		"file1.txt": "content1",
+		"file2.txt": "content2",
+		"file3.txt": "content3",
+		"file4.txt": "content4",
+		"file5.txt": "content5",
+	}
+	tmpDir := createTempDir(t, structure)
+
+	// This should use sequential processing due to small file count
+	fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+	if err != nil {
+		t.Fatalf("walkDirectoriesWithLimit error: %v", err)
+	}
+
+	if len(fileSet.Files) != 5 {
+		t.Errorf("Expected 5 files, got %d", len(fileSet.Files))
+	}
+
+	// Verify all files were processed correctly
+	for _, file := range fileSet.Files {
+		if file.Hash == "" {
+			t.Error("File hash should not be empty")
+		}
+		if file.Name == "" {
+			t.Error("File name should not be empty")
+		}
+	}
+}
+
+// Test parallel processing path
+func TestParallelProcessingPath(t *testing.T) {
+	// Create a larger dataset (over 20 files) that should trigger parallel processing
+	structure := make(map[string]string)
+	for i := 0; i < 30; i++ {
+		structure[fmt.Sprintf("file_%d.txt", i)] = fmt.Sprintf("content_%d", i)
+	}
+	tmpDir := createTempDir(t, structure)
+
+	// This should use parallel processing due to large file count
+	fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, -1)
+	if err != nil {
+		t.Fatalf("walkDirectoriesWithLimit error: %v", err)
+	}
+
+	if len(fileSet.Files) != 30 {
+		t.Errorf("Expected 30 files, got %d", len(fileSet.Files))
+	}
+
+	// Verify all files were processed correctly
+	for _, file := range fileSet.Files {
+		if file.Hash == "" {
+			t.Error("File hash should not be empty")
+		}
+		if file.Name == "" {
+			t.Error("File name should not be empty")
+		}
+	}
+}
+
+// Test hashWorker function with various scenarios
+func TestHashWorker(t *testing.T) {
+	t.Run("single file batch", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.txt")
+		content := "test content"
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		if err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		info, err := os.Stat(testFile)
+		if err != nil {
+			t.Fatalf("Failed to stat test file: %v", err)
+		}
+
+		jobs := make(chan FileJob, 1)
+		results := make(chan FileResult, 1)
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go hashWorker(jobs, results, &wg)
+
+		jobs <- FileJob{
+			Files: []FileTask{{
+				Path:    testFile,
+				Info:    info,
+				RootDir: tmpDir,
+				RelPath: "test.txt",
+			}},
+		}
+		close(jobs)
+
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		result := <-results
+		if len(result.Errors) > 0 {
+			t.Errorf("Unexpected errors: %v", result.Errors)
+		}
+		if len(result.FileInfos) != 1 {
+			t.Errorf("Expected 1 file info, got %d", len(result.FileInfos))
+		}
+		if result.FileInfos[0].Name != "test.txt" {
+			t.Errorf("Expected filename 'test.txt', got %s", result.FileInfos[0].Name)
+		}
+		if result.FileInfos[0].Hash == "" {
+			t.Error("Expected non-empty hash")
+		}
+	})
+
+	t.Run("multiple files batch", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		var tasks []FileTask
+
+		for i := 0; i < 5; i++ {
+			filename := fmt.Sprintf("test%d.txt", i)
+			filepath := filepath.Join(tmpDir, filename)
+			content := fmt.Sprintf("test content %d", i)
+			err := os.WriteFile(filepath, []byte(content), 0644)
+			if err != nil {
+				t.Fatalf("Failed to create test file %d: %v", i, err)
+			}
+
+			info, err := os.Stat(filepath)
+			if err != nil {
+				t.Fatalf("Failed to stat test file %d: %v", i, err)
+			}
+
+			tasks = append(tasks, FileTask{
+				Path:    filepath,
+				Info:    info,
+				RootDir: tmpDir,
+				RelPath: filename,
+			})
+		}
+
+		jobs := make(chan FileJob, 1)
+		results := make(chan FileResult, 1)
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go hashWorker(jobs, results, &wg)
+
+		jobs <- FileJob{Files: tasks}
+		close(jobs)
+
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		result := <-results
+		if len(result.Errors) > 0 {
+			t.Errorf("Unexpected errors: %v", result.Errors)
+		}
+		if len(result.FileInfos) != 5 {
+			t.Errorf("Expected 5 file infos, got %d", len(result.FileInfos))
+		}
+	})
+
+	t.Run("error handling", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		nonExistentFile := filepath.Join(tmpDir, "nonexistent.txt")
+
+		// Create a fake file info for nonexistent file
+		info := &fakeFileInfo{name: "nonexistent.txt", size: 100}
+
+		jobs := make(chan FileJob, 1)
+		results := make(chan FileResult, 1)
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go hashWorker(jobs, results, &wg)
+
+		jobs <- FileJob{
+			Files: []FileTask{{
+				Path:    nonExistentFile,
+				Info:    info,
+				RootDir: tmpDir,
+				RelPath: "nonexistent.txt",
+			}},
+		}
+		close(jobs)
+
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		result := <-results
+		if len(result.Errors) == 0 {
+			t.Error("Expected error for nonexistent file")
+		}
+		if len(result.FileInfos) != 0 {
+			t.Errorf("Expected 0 file infos, got %d", len(result.FileInfos))
+		}
+	})
+}
+
+// Test processFilesSequentially function
+func TestProcessFilesSequentially(t *testing.T) {
+	tmpDir := t.TempDir()
+	var tasks []FileTask
+
+	// Create test files
+	for i := 0; i < 3; i++ {
+		filename := fmt.Sprintf("test%d.txt", i)
+		filepath := filepath.Join(tmpDir, filename)
+		content := fmt.Sprintf("content %d", i)
+		err := os.WriteFile(filepath, []byte(content), 0644)
+		if err != nil {
+			t.Fatalf("Failed to create test file %d: %v", i, err)
+		}
+
+		info, err := os.Stat(filepath)
+		if err != nil {
+			t.Fatalf("Failed to stat test file %d: %v", i, err)
+		}
+
+		tasks = append(tasks, FileTask{
+			Path:    filepath,
+			Info:    info,
+			RootDir: tmpDir,
+			RelPath: filename,
+		})
+	}
+
+	fileSet, err := processFilesSequentially(tasks)
+	if err != nil {
+		t.Fatalf("processFilesSequentially failed: %v", err)
+	}
+
+	if len(fileSet.Files) != 3 {
+		t.Errorf("Expected 3 files, got %d", len(fileSet.Files))
+	}
+
+	// Verify all files processed correctly
+	for i, file := range fileSet.Files {
+		expectedName := fmt.Sprintf("test%d.txt", i)
+		if file.Name != expectedName {
+			t.Errorf("Expected filename %s, got %s", expectedName, file.Name)
+		}
+		if file.Hash == "" {
+			t.Error("Expected non-empty hash")
+		}
+		if file.RootDir != tmpDir {
+			t.Errorf("Expected root dir %s, got %s", tmpDir, file.RootDir)
+		}
+	}
+
+	// Verify lookup maps
+	if len(fileSet.NameMap) != 3 {
+		t.Errorf("Expected 3 entries in NameMap, got %d", len(fileSet.NameMap))
+	}
+	if len(fileSet.HashMap) != 3 {
+		t.Errorf("Expected 3 entries in HashMap, got %d", len(fileSet.HashMap))
+	}
+}
+
+// Test processFilesInParallel function
+func TestProcessFilesInParallel(t *testing.T) {
+	tmpDir := t.TempDir()
+	var tasks []FileTask
+
+	// Create enough test files to trigger meaningful parallelization
+	for i := 0; i < 25; i++ {
+		filename := fmt.Sprintf("test%d.txt", i)
+		filepath := filepath.Join(tmpDir, filename)
+		content := fmt.Sprintf("content %d", i)
+		err := os.WriteFile(filepath, []byte(content), 0644)
+		if err != nil {
+			t.Fatalf("Failed to create test file %d: %v", i, err)
+		}
+
+		info, err := os.Stat(filepath)
+		if err != nil {
+			t.Fatalf("Failed to stat test file %d: %v", i, err)
+		}
+
+		tasks = append(tasks, FileTask{
+			Path:    filepath,
+			Info:    info,
+			RootDir: tmpDir,
+			RelPath: filename,
+		})
+	}
+
+	fileSet, err := processFilesInParallel(tasks)
+	if err != nil {
+		t.Fatalf("processFilesInParallel failed: %v", err)
+	}
+
+	if len(fileSet.Files) != 25 {
+		t.Errorf("Expected 25 files, got %d", len(fileSet.Files))
+	}
+
+	// Verify all files processed correctly
+	for _, file := range fileSet.Files {
+		if file.Hash == "" {
+			t.Error("Expected non-empty hash")
+		}
+		if file.RootDir != tmpDir {
+			t.Errorf("Expected root dir %s, got %s", tmpDir, file.RootDir)
+		}
+	}
+
+	// Verify lookup maps
+	if len(fileSet.NameMap) != 25 {
+		t.Errorf("Expected 25 entries in NameMap, got %d", len(fileSet.NameMap))
+	}
+	if len(fileSet.HashMap) != 25 {
+		t.Errorf("Expected 25 entries in HashMap, got %d", len(fileSet.HashMap))
+	}
+}
+
+// Test edge cases for parallel processing
+func TestProcessFilesInParallelEdgeCases(t *testing.T) {
+	t.Run("empty task list", func(t *testing.T) {
+		fileSet, err := processFilesInParallel([]FileTask{})
+		if err != nil {
+			t.Fatalf("processFilesInParallel failed: %v", err)
+		}
+		if len(fileSet.Files) != 0 {
+			t.Errorf("Expected 0 files, got %d", len(fileSet.Files))
+		}
+	})
+
+	t.Run("single task", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filename := "single.txt"
+		filepath := filepath.Join(tmpDir, filename)
+		content := "single content"
+		err := os.WriteFile(filepath, []byte(content), 0644)
+		if err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		info, err := os.Stat(filepath)
+		if err != nil {
+			t.Fatalf("Failed to stat test file: %v", err)
+		}
+
+		tasks := []FileTask{{
+			Path:    filepath,
+			Info:    info,
+			RootDir: tmpDir,
+			RelPath: filename,
+		}}
+
+		fileSet, err := processFilesInParallel(tasks)
+		if err != nil {
+			t.Fatalf("processFilesInParallel failed: %v", err)
+		}
+		if len(fileSet.Files) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(fileSet.Files))
+		}
+	})
+}
+
+// Helper type for testing error scenarios
+type fakeFileInfo struct {
+	name string
+	size int64
+}
+
+func (f *fakeFileInfo) Name() string       { return f.name }
+func (f *fakeFileInfo) Size() int64        { return f.size }
+func (f *fakeFileInfo) Mode() os.FileMode  { return 0644 }
+func (f *fakeFileInfo) ModTime() time.Time { return time.Now() }
+func (f *fakeFileInfo) IsDir() bool        { return false }
+func (f *fakeFileInfo) Sys() interface{}   { return nil }
+
+// Test concurrent access behavior
+func TestConcurrentWalkDirectories(t *testing.T) {
+	structure := map[string]string{
+		"file1.txt":        "content1",
+		"file2.txt":        "content2",
+		"file3.txt":        "content3",
+		"subdir/file4.txt": "content4",
+		"subdir/file5.txt": "content5",
+	}
+	tmpDir := createTempDir(t, structure)
+
+	// Run multiple concurrent walkDirectories calls
+	var wg sync.WaitGroup
+	results := make([]*FileSet, 3)
+	errors := make([]error, 3)
+
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errors[idx] = walkDirectories([]string{tmpDir})
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Check all completed without errors
+	for i, err := range errors {
+		if err != nil {
+			t.Errorf("Concurrent call %d failed: %v", i, err)
+		}
+	}
+
+	// Verify all results have the same number of files
+	expectedFiles := len(results[0].Files)
+	for i := 1; i < len(results); i++ {
+		if len(results[i].Files) != expectedFiles {
+			t.Errorf("Concurrent call %d returned %d files, expected %d",
+				i, len(results[i].Files), expectedFiles)
+		}
+	}
+
+	// Verify all results contain the same files (by hash)
+	baseHashes := make(map[string]bool)
+	for _, file := range results[0].Files {
+		baseHashes[file.Hash] = true
+	}
+
+	for i := 1; i < len(results); i++ {
+		for _, file := range results[i].Files {
+			if !baseHashes[file.Hash] {
+				t.Errorf("Concurrent call %d returned unexpected file hash: %s", i, file.Hash)
+			}
+		}
+	}
 }

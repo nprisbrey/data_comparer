@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // FileInfo represents metadata about a file
@@ -64,6 +65,59 @@ func hashFile(filePath string) (string, error) {
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
+// FileJob represents a batch of files to be hashed
+type FileJob struct {
+	Files []FileTask
+}
+
+// FileTask represents a single file to be hashed
+type FileTask struct {
+	Path    string
+	Info    os.FileInfo
+	RootDir string
+	RelPath string
+}
+
+// FileResult represents the result of hashing a batch of files
+type FileResult struct {
+	FileInfos []*FileInfo
+	Errors    []error
+}
+
+// hashWorker processes batches of files from the job channel
+func hashWorker(jobs <-chan FileJob, results chan<- FileResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for job := range jobs {
+		batch := FileResult{
+			FileInfos: make([]*FileInfo, 0, len(job.Files)),
+			Errors:    make([]error, 0),
+		}
+
+		for _, task := range job.Files {
+			hash, err := hashFile(task.Path)
+			if err != nil {
+				batch.Errors = append(batch.Errors,
+					fmt.Errorf("could not hash file %s: %v", task.Path, err))
+				continue
+			}
+
+			fileInfo := &FileInfo{
+				RelativePath: task.RelPath,
+				AbsolutePath: task.Path,
+				Name:         task.Info.Name(),
+				Hash:         hash,
+				Size:         task.Info.Size(),
+				RootDir:      task.RootDir,
+			}
+
+			batch.FileInfos = append(batch.FileInfos, fileInfo)
+		}
+
+		results <- batch
+	}
+}
+
 // walkDirectories recursively walks through directories and builds a FileSet
 func walkDirectories(dirs []string) (*FileSet, error) {
 	return walkDirectoriesWithLimit(dirs, -1)
@@ -71,11 +125,9 @@ func walkDirectories(dirs []string) (*FileSet, error) {
 
 // walkDirectoriesWithLimit recursively walks through directories and builds a FileSet with optional file limit
 func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
-	fileSet := &FileSet{
-		Files:   make([]*FileInfo, 0),
-		NameMap: make(map[string][]*FileInfo),
-		HashMap: make(map[string][]*FileInfo),
-	}
+	// First, collect all files to determine if parallelization is worthwhile
+	var allTasks []FileTask
+	taskCount := 0
 
 	for _, dir := range dirs {
 		// Check if directory exists
@@ -94,40 +146,145 @@ func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
 				return nil
 			}
 
-			hash, err := hashFile(path)
-			if err != nil {
-				fmt.Printf("Warning: Could not hash file %s: %v\n", path, err)
-				return nil
+			// Check limit before adding to tasks
+			if limit > 0 && taskCount >= limit {
+				return filepath.SkipAll
 			}
+			taskCount++
 
 			relPath, err := filepath.Rel(dir, path)
 			if err != nil {
 				relPath = path
 			}
 
-			fileInfo := &FileInfo{
-				RelativePath: relPath,
-				AbsolutePath: path,
-				Name:         info.Name(),
-				Hash:         hash,
-				Size:         info.Size(),
-				RootDir:      dir,
+			task := FileTask{
+				Path:    path,
+				Info:    info,
+				RootDir: dir,
+				RelPath: relPath,
 			}
 
-			fileSet.Files = append(fileSet.Files, fileInfo)
-			fileSet.NameMap[info.Name()] = append(fileSet.NameMap[info.Name()], fileInfo)
-			fileSet.HashMap[hash] = append(fileSet.HashMap[hash], fileInfo)
-
-			// Check if we've reached the limit (if set)
-			if limit > 0 && len(fileSet.Files) >= limit {
-				return filepath.SkipAll
-			}
-
+			allTasks = append(allTasks, task)
 			return nil
 		})
 
 		if err != nil {
 			return nil, fmt.Errorf("error walking directory %s: %v", dir, err)
+		}
+	}
+
+	// Determine if we should use parallel processing
+	// Only parallelize if we have enough work to justify the overhead
+	const minFilesForParallelization = 20
+	if len(allTasks) < minFilesForParallelization {
+		// Process sequentially for small workloads
+		return processFilesSequentially(allTasks)
+	}
+
+	return processFilesInParallel(allTasks)
+}
+
+// processFilesSequentially handles small workloads without goroutine overhead
+func processFilesSequentially(tasks []FileTask) (*FileSet, error) {
+	fileSet := &FileSet{
+		Files:   make([]*FileInfo, 0, len(tasks)),
+		NameMap: make(map[string][]*FileInfo),
+		HashMap: make(map[string][]*FileInfo),
+	}
+
+	for _, task := range tasks {
+		hash, err := hashFile(task.Path)
+		if err != nil {
+			fmt.Printf("Warning: Could not hash file %s: %v\n", task.Path, err)
+			continue
+		}
+
+		fileInfo := &FileInfo{
+			RelativePath: task.RelPath,
+			AbsolutePath: task.Path,
+			Name:         task.Info.Name(),
+			Hash:         hash,
+			Size:         task.Info.Size(),
+			RootDir:      task.RootDir,
+		}
+
+		fileSet.Files = append(fileSet.Files, fileInfo)
+		fileSet.NameMap[fileInfo.Name] = append(fileSet.NameMap[fileInfo.Name], fileInfo)
+		fileSet.HashMap[fileInfo.Hash] = append(fileSet.HashMap[fileInfo.Hash], fileInfo)
+	}
+
+	return fileSet, nil
+}
+
+// processFilesInParallel handles large workloads with optimal parallelization
+func processFilesInParallel(tasks []FileTask) (*FileSet, error) {
+	// Use 75% of CPU cores as requested
+	numWorkers := int(float64(runtime.NumCPU()) * 0.75)
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	// Calculate optimal batch size based on total work and number of workers
+	// Aim for at least 10 files per batch to justify goroutine overhead
+	const minBatchSize = 10
+	batchSize := len(tasks) / (numWorkers * 2) // Aim for 2 batches per worker
+	if batchSize < minBatchSize {
+		batchSize = minBatchSize
+	}
+
+	// Create work batches
+	var jobs []FileJob
+	for i := 0; i < len(tasks); i += batchSize {
+		end := i + batchSize
+		if end > len(tasks) {
+			end = len(tasks)
+		}
+		jobs = append(jobs, FileJob{Files: tasks[i:end]})
+	}
+
+	// Create channels with appropriate buffer sizes
+	jobChannel := make(chan FileJob, len(jobs))
+	resultChannel := make(chan FileResult, len(jobs))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go hashWorker(jobChannel, resultChannel, &wg)
+	}
+
+	// Send jobs to workers
+	go func() {
+		for _, job := range jobs {
+			jobChannel <- job
+		}
+		close(jobChannel)
+	}()
+
+	// Close result channel when all workers are done
+	go func() {
+		wg.Wait()
+		close(resultChannel)
+	}()
+
+	// Collect results
+	fileSet := &FileSet{
+		Files:   make([]*FileInfo, 0, len(tasks)),
+		NameMap: make(map[string][]*FileInfo),
+		HashMap: make(map[string][]*FileInfo),
+	}
+
+	for result := range resultChannel {
+		// Handle errors
+		for _, err := range result.Errors {
+			fmt.Printf("Warning: %v\n", err)
+		}
+
+		// Add successful results
+		for _, fileInfo := range result.FileInfos {
+			fileSet.Files = append(fileSet.Files, fileInfo)
+			fileSet.NameMap[fileInfo.Name] = append(fileSet.NameMap[fileInfo.Name], fileInfo)
+			fileSet.HashMap[fileInfo.Hash] = append(fileSet.HashMap[fileInfo.Hash], fileInfo)
 		}
 	}
 
