@@ -487,10 +487,11 @@ func buildTree(files []*FileInfo) *TreeNode {
 
 func main() {
 	if len(os.Args) < 3 {
+		execName := filepath.Base(os.Args[0])
 		fmt.Println("Directory Comparison Tool")
 		fmt.Println("=========================")
 		fmt.Println()
-		fmt.Println("Usage: go run main.go <set1_dirs> <set2_dirs> [options]")
+		fmt.Printf("Usage: %s <set1_dirs> <set2_dirs> [options]\n", execName)
 		fmt.Println()
 		fmt.Println("Arguments:")
 		fmt.Println("  set1_dirs    Comma-separated list of directories in the first set")
@@ -501,8 +502,8 @@ func main() {
 		fmt.Println("  --show-unique-1   Show files unique to set 1 (third tree)")
 		fmt.Println()
 		fmt.Println("Example:")
-		fmt.Println("  go run main.go ./set1,./backup1 ./set2,./backup2")
-		fmt.Println("  go run main.go /home/user/docs /home/user/new_docs --details --show-unique-1")
+		fmt.Printf("  %s ./set1,./backup1 ./set2,./backup2\n", execName)
+		fmt.Printf("  %s /home/user/docs /home/user/new_docs --details --show-unique-1\n", execName)
 		os.Exit(1)
 	}
 
