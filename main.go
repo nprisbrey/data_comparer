@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -485,42 +487,73 @@ func buildTree(files []*FileInfo) *TreeNode {
 	return root
 }
 
-func main() {
-	if len(os.Args) < 3 {
-		execName := filepath.Base(os.Args[0])
-		fmt.Println("Directory Comparison Tool")
-		fmt.Println("=========================")
-		fmt.Println()
-		fmt.Printf("Usage: %s <set1_dirs> <set2_dirs> [options]\n", execName)
-		fmt.Println()
-		fmt.Println("Arguments:")
-		fmt.Println("  set1_dirs    Comma-separated list of directories in the first set")
-		fmt.Println("  set2_dirs    Comma-separated list of directories in the second set")
-		fmt.Println()
-		fmt.Println("Options:")
-		fmt.Println("  --details         Show file sizes and additional details")
-		fmt.Println("  --show-unique-1   Show files unique to set 1 (third tree)")
-		fmt.Println()
-		fmt.Println("Example:")
-		fmt.Printf("  %s ./set1,./backup1 ./set2,./backup2\n", execName)
-		fmt.Printf("  %s /home/user/docs /home/user/new_docs --details --show-unique-1\n", execName)
-		os.Exit(1)
+// getOSSpecificExamples returns example paths and descriptions based on the current OS
+func getOSSpecificExamples() (string, string, string, string) {
+	if runtime.GOOS == "windows" {
+		return "C:\\Photos\\2023", "D:\\Backup\\Photos",
+			"C:\\Photos\\2023,C:\\Photos\\2024", "D:\\Backup\\Photos"
 	}
+	return "/home/user/photos/2023", "/home/user/backup/photos",
+		"/home/user/photos/2023,/home/user/photos/2024", "/home/user/backup/photos"
+}
 
-	set1Dirs := strings.Split(os.Args[1], ",")
-	set2Dirs := strings.Split(os.Args[2], ",")
+// readUserInput reads a line of input from the user with a prompt
+func readUserInput(prompt string) string {
+	fmt.Print(prompt)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	return strings.TrimSpace(scanner.Text())
+}
 
-	showDetails := false
-	showUniqueToSet1 := false
-
-	for i := 3; i < len(os.Args); i++ {
-		switch os.Args[i] {
-		case "--details":
-			showDetails = true
-		case "--show-unique-1":
-			showUniqueToSet1 = true
+// readYesNo reads a yes/no response from the user
+func readYesNo(prompt string) bool {
+	for {
+		response := strings.ToLower(readUserInput(prompt))
+		if response == "y" || response == "yes" {
+			return true
 		}
+		if response == "n" || response == "no" {
+			return false
+		}
+		fmt.Println("Please enter 'y' or 'n'")
 	}
+}
+
+// runInteractiveMode runs the tool in interactive mode when no arguments are provided
+func runInteractiveMode(execName string) ([]string, []string, bool, bool, bool, bool) {
+	fmt.Println("Directory Comparison Tool - Interactive Mode")
+	fmt.Println("=============================================")
+	fmt.Println()
+	fmt.Println("No arguments provided. Starting interactive mode...")
+	fmt.Println()
+
+	example1, example2, multiExample1, _ := getOSSpecificExamples()
+
+	fmt.Printf("Example: If you want to compare your photos folder with your backup:\n")
+	fmt.Printf("- Set 1 could be: %s\n", example1)
+	fmt.Printf("- Set 2 could be: %s\n", example2)
+	fmt.Println()
+
+	set1Input := readUserInput(fmt.Sprintf("Enter Set 1 directories (comma-separated if multiple):\nExample: %s or %s\n> ", example1, multiExample1))
+	for set1Input == "" {
+		fmt.Println("Set 1 directories cannot be empty.")
+		set1Input = readUserInput("> ")
+	}
+
+	set2Input := readUserInput(fmt.Sprintf("Enter Set 2 directories (comma-separated if multiple):\nExample: %s\n> ", example2))
+	for set2Input == "" {
+		fmt.Println("Set 2 directories cannot be empty.")
+		set2Input = readUserInput("> ")
+	}
+
+	fmt.Println()
+	showModified := readYesNo("Show files that were modified (same name, different content)? (y/n): ")
+	showUniqueToSet2 := readYesNo("Show files unique to Set 2 (files in Set 2 not in Set 1)? (y/n): ")
+	showUniqueToSet1 := readYesNo("Show files unique to Set 1 (files in Set 1 not in Set 2)? (y/n): ")
+	showDetails := readYesNo("Show file size details? (y/n): ")
+
+	set1Dirs := strings.Split(set1Input, ",")
+	set2Dirs := strings.Split(set2Input, ",")
 
 	// Clean up directory paths
 	for i := range set1Dirs {
@@ -528,6 +561,76 @@ func main() {
 	}
 	for i := range set2Dirs {
 		set2Dirs[i] = strings.TrimSpace(set2Dirs[i])
+	}
+
+	fmt.Println()
+	return set1Dirs, set2Dirs, showModified, showUniqueToSet2, showUniqueToSet1, showDetails
+}
+
+func main() {
+	execName := filepath.Base(os.Args[0])
+
+	var set1Dirs, set2Dirs []string
+	var showDetails, showUniqueToSet1, showModified, showUniqueToSet2 bool
+
+	if len(os.Args) < 3 {
+		// Interactive mode or show help
+		if len(os.Args) == 1 {
+			// No arguments - start interactive mode
+			set1Dirs, set2Dirs, showModified, showUniqueToSet2, showUniqueToSet1, showDetails = runInteractiveMode(execName)
+		} else {
+			// Not enough arguments - show help
+			example1, example2, multiExample1, multiExample2 := getOSSpecificExamples()
+
+			fmt.Println("Directory Comparison Tool")
+			fmt.Println("=========================")
+			fmt.Println()
+			fmt.Printf("Usage: %s <set1_dirs> <set2_dirs> [options]\n", execName)
+			fmt.Println()
+			fmt.Println("Arguments:")
+			fmt.Println("  set1_dirs    Comma-separated list of directories in the first set")
+			fmt.Println("  set2_dirs    Comma-separated list of directories in the second set")
+			fmt.Println()
+			fmt.Println("Options:")
+			fmt.Println("  --details         Show file sizes and additional details")
+			fmt.Println("  --show-modified   Show files with same name but different content")
+			fmt.Println("  --show-unique-2   Show files unique to set 2")
+			fmt.Println("  --show-unique-1   Show files unique to set 1")
+			fmt.Println()
+			fmt.Println("Example:")
+			fmt.Printf("  %s %s %s\n", execName, multiExample1, multiExample2)
+			fmt.Printf("  %s %s %s --details --show-unique-1\n", execName, example1, example2)
+			fmt.Println()
+			fmt.Println("Or run without arguments for interactive mode:")
+			fmt.Printf("  %s\n", execName)
+			os.Exit(1)
+		}
+	} else {
+		// Command line mode
+		set1Dirs = strings.Split(os.Args[1], ",")
+		set2Dirs = strings.Split(os.Args[2], ",")
+
+		// Parse flags
+		for i := 3; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--details":
+				showDetails = true
+			case "--show-unique-1":
+				showUniqueToSet1 = true
+			case "--show-unique-2":
+				showUniqueToSet2 = true
+			case "--show-modified":
+				showModified = true
+			}
+		}
+
+		// Clean up directory paths
+		for i := range set1Dirs {
+			set1Dirs[i] = strings.TrimSpace(set1Dirs[i])
+		}
+		for i := range set2Dirs {
+			set2Dirs[i] = strings.TrimSpace(set2Dirs[i])
+		}
 	}
 
 	fmt.Println("Directory Comparison Tool")
@@ -559,32 +662,36 @@ func main() {
 
 	fmt.Println()
 
-	// First tree: Files with same name but different content
-	if len(result.SameNameDifferentHash) > 0 {
-		fmt.Printf("⚠️  Files with same name but different content (%d files) - Set 2 (%s) → Set 1 (%s):\n", len(result.SameNameDifferentHash), strings.Join(set2Dirs, ", "), strings.Join(set1Dirs, ", "))
-		fmt.Println("=" + strings.Repeat("=", 50))
-		fmt.Println()
+	// First tree: Files with same name but different content (optional)
+	if showModified {
+		if len(result.SameNameDifferentHash) > 0 {
+			fmt.Printf("⚠️  Files with same name but different content (%d files) - Set 2 (%s) → Set 1 (%s):\n", len(result.SameNameDifferentHash), strings.Join(set2Dirs, ", "), strings.Join(set1Dirs, ", "))
+			fmt.Println("=" + strings.Repeat("=", 50))
+			fmt.Println()
 
-		tree1 := buildTree(result.SameNameDifferentHash)
-		printTree(tree1, "", true, showDetails, result.NameMappings)
-		fmt.Println()
-	} else {
-		fmt.Println("✅ No files found with same name but different content.")
-		fmt.Println()
+			tree1 := buildTree(result.SameNameDifferentHash)
+			printTree(tree1, "", true, showDetails, result.NameMappings)
+			fmt.Println()
+		} else {
+			fmt.Println("✅ No files found with same name but different content.")
+			fmt.Println()
+		}
 	}
 
-	// Second tree: Files unique to set 2
-	if len(result.UniqueToSet2) > 0 {
-		fmt.Printf("📋 Files unique to Set 2 (%s) - not found in Set 1 (%s) (%d files):\n", strings.Join(set2Dirs, ", "), strings.Join(set1Dirs, ", "), len(result.UniqueToSet2))
-		fmt.Println("=" + strings.Repeat("=", 50))
-		fmt.Println()
+	// Second tree: Files unique to set 2 (optional)
+	if showUniqueToSet2 {
+		if len(result.UniqueToSet2) > 0 {
+			fmt.Printf("📋 Files unique to Set 2 (%s) - not found in Set 1 (%s) (%d files):\n", strings.Join(set2Dirs, ", "), strings.Join(set1Dirs, ", "), len(result.UniqueToSet2))
+			fmt.Println("=" + strings.Repeat("=", 50))
+			fmt.Println()
 
-		tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
-		printTree(tree2, "", true, showDetails, nil)
-		fmt.Println()
-	} else {
-		fmt.Println("✅ No unique files found in Set 2.")
-		fmt.Println()
+			tree2 := buildSmartTree(result.UniqueToSet2, set2, set1)
+			printTree(tree2, "", true, showDetails, nil)
+			fmt.Println()
+		} else {
+			fmt.Println("✅ No unique files found in Set 2.")
+			fmt.Println()
+		}
 	}
 
 	// Third tree: Files unique to set 1 (optional)
@@ -607,8 +714,12 @@ func main() {
 	fmt.Println("📊 Summary:")
 	fmt.Printf("   • Files in Set 1: %d\n", len(set1.Files))
 	fmt.Printf("   • Files in Set 2: %d\n", len(set2.Files))
-	fmt.Printf("   • Same name, different content: %d\n", len(result.SameNameDifferentHash))
-	fmt.Printf("   • Unique to Set 2: %d\n", len(result.UniqueToSet2))
+	if showModified {
+		fmt.Printf("   • Same name, different content: %d\n", len(result.SameNameDifferentHash))
+	}
+	if showUniqueToSet2 {
+		fmt.Printf("   • Unique to Set 2: %d\n", len(result.UniqueToSet2))
+	}
 	if showUniqueToSet1 {
 		fmt.Printf("   • Unique to Set 1: %d\n", len(result.UniqueToSet1))
 	}
@@ -616,27 +727,40 @@ func main() {
 	// Calculate sizes for different categories
 	var sameNameSize, uniqueSet2Size, uniqueSet1Size int64
 
-	for _, file := range result.SameNameDifferentHash {
-		sameNameSize += file.Size
+	if showModified {
+		for _, file := range result.SameNameDifferentHash {
+			sameNameSize += file.Size
+		}
 	}
-	for _, file := range result.UniqueToSet2 {
-		uniqueSet2Size += file.Size
+	if showUniqueToSet2 {
+		for _, file := range result.UniqueToSet2 {
+			uniqueSet2Size += file.Size
+		}
 	}
-	for _, file := range result.UniqueToSet1 {
-		uniqueSet1Size += file.Size
+	if showUniqueToSet1 {
+		for _, file := range result.UniqueToSet1 {
+			uniqueSet1Size += file.Size
+		}
 	}
 
-	if sameNameSize > 0 || uniqueSet2Size > 0 || (showUniqueToSet1 && uniqueSet1Size > 0) {
+	if (showModified && sameNameSize > 0) || (showUniqueToSet2 && uniqueSet2Size > 0) || (showUniqueToSet1 && uniqueSet1Size > 0) {
 		fmt.Println("   • Total sizes:")
-		if sameNameSize > 0 {
+		if showModified && sameNameSize > 0 {
 			fmt.Printf("     - Same name, different content: %s\n", formatSize(sameNameSize))
 		}
-		if uniqueSet2Size > 0 {
+		if showUniqueToSet2 && uniqueSet2Size > 0 {
 			fmt.Printf("     - Unique to Set 2: %s\n", formatSize(uniqueSet2Size))
 		}
 		if showUniqueToSet1 && uniqueSet1Size > 0 {
 			fmt.Printf("     - Unique to Set 1: %s\n", formatSize(uniqueSet1Size))
 		}
+	}
+
+	// On Windows, wait for user input before closing
+	if runtime.GOOS == "windows" {
+		fmt.Println()
+		fmt.Print("Press Enter to exit...")
+		bufio.NewScanner(os.Stdin).Scan()
 	}
 }
 

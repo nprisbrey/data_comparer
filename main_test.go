@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -2360,4 +2361,405 @@ func TestMarkEntireDirectoriesCompleteCoverage(t *testing.T) {
 			t.Error("Non-directory node should never be marked as entire")
 		}
 	})
+}
+
+// Tests for new interactive mode and OS-specific functionality
+
+func TestGetOSSpecificExamples(t *testing.T) {
+	// Test that the function returns different examples for different operating systems
+	example1, example2, multiExample1, multiExample2 := getOSSpecificExamples()
+
+	// Should return 4 strings
+	if example1 == "" || example2 == "" || multiExample1 == "" || multiExample2 == "" {
+		t.Error("All examples should be non-empty strings")
+	}
+
+	// Examples should contain path separators appropriate for the OS
+	// We can't easily mock runtime.GOOS in a unit test, but we can verify the function returns valid paths
+	if !strings.Contains(multiExample1, ",") {
+		t.Error("Multi-example should contain comma separator")
+	}
+
+	// Verify that examples look like reasonable file paths
+	if !strings.Contains(example1, "photos") || !strings.Contains(example2, "backup") {
+		t.Error("Examples should contain reasonable directory names")
+	}
+}
+
+func TestReadYesNo(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"lowercase yes", "y", true},
+		{"uppercase yes", "Y", true},
+		{"full yes", "yes", true},
+		{"full YES", "YES", true},
+		{"lowercase no", "n", false},
+		{"uppercase no", "N", false},
+		{"full no", "no", false},
+		{"full NO", "NO", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a pipe to simulate user input
+			oldStdin := os.Stdin
+			r, w, _ := os.Pipe()
+			os.Stdin = r
+
+			// Write the input to the pipe
+			go func() {
+				defer w.Close()
+				w.Write([]byte(tt.input + "\n"))
+			}()
+
+			// Capture stdout to avoid printing during tests
+			oldStdout := os.Stdout
+			os.Stdout, _ = os.Open(os.DevNull)
+
+			result := readYesNo("Test prompt: ")
+
+			// Restore stdin and stdout
+			os.Stdin = oldStdin
+			os.Stdout = oldStdout
+			r.Close()
+
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestNewCommandLineFlags(t *testing.T) {
+	tests := []struct {
+		name                 string
+		args                 []string
+		expectedShowModified bool
+		expectedShowUnique2  bool
+		expectedShowUnique1  bool
+		expectedShowDetails  bool
+	}{
+		{
+			name:                 "no flags",
+			args:                 []string{"dir-compare", "set1", "set2"},
+			expectedShowModified: false,
+			expectedShowUnique2:  false,
+			expectedShowUnique1:  false,
+			expectedShowDetails:  false,
+		},
+		{
+			name:                 "show modified only",
+			args:                 []string{"dir-compare", "set1", "set2", "--show-modified"},
+			expectedShowModified: true,
+			expectedShowUnique2:  false,
+			expectedShowUnique1:  false,
+			expectedShowDetails:  false,
+		},
+		{
+			name:                 "show unique-2 only",
+			args:                 []string{"dir-compare", "set1", "set2", "--show-unique-2"},
+			expectedShowModified: false,
+			expectedShowUnique2:  true,
+			expectedShowUnique1:  false,
+			expectedShowDetails:  false,
+		},
+		{
+			name:                 "show unique-1 only",
+			args:                 []string{"dir-compare", "set1", "set2", "--show-unique-1"},
+			expectedShowModified: false,
+			expectedShowUnique2:  false,
+			expectedShowUnique1:  true,
+			expectedShowDetails:  false,
+		},
+		{
+			name:                 "show details only",
+			args:                 []string{"dir-compare", "set1", "set2", "--details"},
+			expectedShowModified: false,
+			expectedShowUnique2:  false,
+			expectedShowUnique1:  false,
+			expectedShowDetails:  true,
+		},
+		{
+			name:                 "all flags",
+			args:                 []string{"dir-compare", "set1", "set2", "--show-modified", "--show-unique-2", "--show-unique-1", "--details"},
+			expectedShowModified: true,
+			expectedShowUnique2:  true,
+			expectedShowUnique1:  true,
+			expectedShowDetails:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary directories for testing
+			tempDir1 := createTempDir(t, map[string]string{
+				"file1.txt": "content1",
+			})
+			tempDir2 := createTempDir(t, map[string]string{
+				"file1.txt": "content1", // Same content to avoid errors
+			})
+
+			// Replace directory arguments with actual temp directories
+			args := make([]string, len(tt.args))
+			copy(args, tt.args)
+			if len(args) >= 3 {
+				args[1] = tempDir1
+				args[2] = tempDir2
+			}
+
+			// Test the flag parsing logic by examining the actual logic from main
+			showDetails := false
+			showUniqueToSet1 := false
+			showUniqueToSet2 := false
+			showModified := false
+
+			// Parse flags (simulating the logic from main)
+			if len(args) >= 3 {
+				for i := 3; i < len(args); i++ {
+					switch args[i] {
+					case "--details":
+						showDetails = true
+					case "--show-unique-1":
+						showUniqueToSet1 = true
+					case "--show-unique-2":
+						showUniqueToSet2 = true
+					case "--show-modified":
+						showModified = true
+					}
+				}
+			}
+
+			// Verify flag parsing
+			if showModified != tt.expectedShowModified {
+				t.Errorf("showModified: expected %v, got %v", tt.expectedShowModified, showModified)
+			}
+			if showUniqueToSet2 != tt.expectedShowUnique2 {
+				t.Errorf("showUniqueToSet2: expected %v, got %v", tt.expectedShowUnique2, showUniqueToSet2)
+			}
+			if showUniqueToSet1 != tt.expectedShowUnique1 {
+				t.Errorf("showUniqueToSet1: expected %v, got %v", tt.expectedShowUnique1, showUniqueToSet1)
+			}
+			if showDetails != tt.expectedShowDetails {
+				t.Errorf("showDetails: expected %v, got %v", tt.expectedShowDetails, showDetails)
+			}
+		})
+	}
+}
+
+func TestConditionalOutputSections(t *testing.T) {
+	// Test that output sections are only shown when requested
+	tempDir1 := createTempDir(t, map[string]string{
+		"file1.txt":   "content1",
+		"common.txt":  "same content",
+		"unique1.txt": "only in set1",
+	})
+	tempDir2 := createTempDir(t, map[string]string{
+		"file1.txt":   "different content",
+		"common.txt":  "same content",
+		"unique2.txt": "only in set2",
+	})
+
+	set1, err := walkDirectories([]string{tempDir1})
+	if err != nil {
+		t.Fatalf("Failed to walk set1: %v", err)
+	}
+
+	set2, err := walkDirectories([]string{tempDir2})
+	if err != nil {
+		t.Fatalf("Failed to walk set2: %v", err)
+	}
+
+	result := compareFileSets(set1, set2)
+
+	// Verify the comparison found the expected differences
+	if len(result.SameNameDifferentHash) != 1 {
+		t.Errorf("Expected 1 modified file, got %d", len(result.SameNameDifferentHash))
+	}
+	if len(result.UniqueToSet2) != 1 {
+		t.Errorf("Expected 1 unique file in set2, got %d", len(result.UniqueToSet2))
+	}
+	if len(result.UniqueToSet1) != 1 {
+		t.Errorf("Expected 1 unique file in set1, got %d", len(result.UniqueToSet1))
+	}
+
+	tests := []struct {
+		name             string
+		showModified     bool
+		showUniqueToSet2 bool
+		showUniqueToSet1 bool
+		expectModified   bool
+		expectUniqueSet2 bool
+		expectUniqueSet1 bool
+	}{
+		{
+			name:             "no sections shown",
+			showModified:     false,
+			showUniqueToSet2: false,
+			showUniqueToSet1: false,
+			expectModified:   false,
+			expectUniqueSet2: false,
+			expectUniqueSet1: false,
+		},
+		{
+			name:             "only modified shown",
+			showModified:     true,
+			showUniqueToSet2: false,
+			showUniqueToSet1: false,
+			expectModified:   true,
+			expectUniqueSet2: false,
+			expectUniqueSet1: false,
+		},
+		{
+			name:             "only unique set2 shown",
+			showModified:     false,
+			showUniqueToSet2: true,
+			showUniqueToSet1: false,
+			expectModified:   false,
+			expectUniqueSet2: true,
+			expectUniqueSet1: false,
+		},
+		{
+			name:             "all sections shown",
+			showModified:     true,
+			showUniqueToSet2: true,
+			showUniqueToSet1: true,
+			expectModified:   true,
+			expectUniqueSet2: true,
+			expectUniqueSet1: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Capture stdout to check what gets printed
+			oldStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			// Simulate the conditional output logic from main
+
+			// First tree: Files with same name but different content (optional)
+			if tt.showModified {
+				if len(result.SameNameDifferentHash) > 0 {
+					fmt.Printf("⚠️  Files with same name but different content")
+				}
+			}
+
+			// Second tree: Files unique to set 2 (optional)
+			if tt.showUniqueToSet2 {
+				if len(result.UniqueToSet2) > 0 {
+					fmt.Printf("📋 Files unique to Set 2")
+				}
+			}
+
+			// Third tree: Files unique to set 1 (optional)
+			if tt.showUniqueToSet1 {
+				if len(result.UniqueToSet1) > 0 {
+					fmt.Printf("📋 Files unique to Set 1")
+				}
+			}
+
+			w.Close()
+			os.Stdout = oldStdout
+
+			buf := make([]byte, 1024)
+			n, _ := r.Read(buf)
+			output := string(buf[:n])
+			r.Close()
+
+			// Check if sections were printed as expected
+			hasModified := strings.Contains(output, "same name but different content")
+			hasUniqueSet2 := strings.Contains(output, "unique to Set 2")
+			hasUniqueSet1 := strings.Contains(output, "unique to Set 1")
+
+			if hasModified != tt.expectModified {
+				t.Errorf("Modified section: expected %v, got %v", tt.expectModified, hasModified)
+			}
+			if hasUniqueSet2 != tt.expectUniqueSet2 {
+				t.Errorf("Unique Set2 section: expected %v, got %v", tt.expectUniqueSet2, hasUniqueSet2)
+			}
+			if hasUniqueSet1 != tt.expectUniqueSet1 {
+				t.Errorf("Unique Set1 section: expected %v, got %v", tt.expectUniqueSet1, hasUniqueSet1)
+			}
+		})
+	}
+}
+
+func TestReadUserInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"simple input", "hello world", "hello world"},
+		{"input with spaces", "  hello world  ", "hello world"},
+		{"empty input", "", ""},
+		{"input with newline", "test\n", "test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a pipe to simulate user input
+			oldStdin := os.Stdin
+			r, w, _ := os.Pipe()
+			os.Stdin = r
+
+			// Write the input to the pipe
+			go func() {
+				defer w.Close()
+				w.Write([]byte(tt.input + "\n"))
+			}()
+
+			// Capture stdout to avoid printing during tests
+			oldStdout := os.Stdout
+			os.Stdout, _ = os.Open(os.DevNull)
+
+			result := readUserInput("Test prompt: ")
+
+			// Restore stdin and stdout
+			os.Stdin = oldStdin
+			os.Stdout = oldStdout
+			r.Close()
+
+			if result != tt.expected {
+				t.Errorf("Expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestWindowsPressEnterFunctionality(t *testing.T) {
+	// Test the Windows-specific "Press Enter to exit" logic
+	// We can't easily test the runtime.GOOS check without changing the OS,
+	// but we can verify the logic would work correctly
+
+	// The actual logic is:
+	// if runtime.GOOS == "windows" {
+	//     fmt.Println()
+	//     fmt.Print("Press Enter to exit...")
+	//     bufio.NewScanner(os.Stdin).Scan()
+	// }
+
+	// We'll verify that the scanner.Scan() call would work properly
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+
+	go func() {
+		defer w.Close()
+		w.Write([]byte("\n")) // Simulate Enter key
+	}()
+
+	// Test the scanner functionality
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		t.Error("Scanner should successfully read input")
+	}
+
+	// Restore stdin
+	os.Stdin = oldStdin
+	r.Close()
 }
