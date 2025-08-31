@@ -1,70 +1,94 @@
-# CLAUDE.md
+# Project Overview
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This is a fast, intelligent directory comparison tool written in Go that identifies differences between file sets using content-based comparison (SHA256 hashing). The tool is designed as a single-file Go application with comprehensive testing and cross-platform support.
 
-## Essential Commands
+# Key Architecture
 
-### Building
+- **Single main.go**: All functionality is contained in one file (~1000+ lines) with well-defined data structures:
+  - `FileInfo`: Represents file metadata including path, hash, size, and root directory
+  - `FileSet`: Collection of files with lookup maps for efficient comparison
+  - `ComparisonResult`: Holds comparison results between two file sets
+  - `TreeNode`: Represents directory tree structure for formatted output
+
+- **Core workflow**: File discovery → SHA256 hashing → intelligent comparison → tree building → formatted output
+- **Concurrency**: Uses goroutines and worker pools for parallel file processing with CPU-optimized batching
+- **No external dependencies**: Uses only Go standard library
+
+# Common Development Commands
+
+## Building and Testing
 ```bash
-make build              # Build the binary (creates dir-compare)
-go build -o dir-compare # Alternative manual build
+# Build the binary
+make build
+
+# Run all tests with race detection and coverage
+make test
+
+# Run comprehensive test suite (includes coverage, race detection, benchmarks)
+make test-all
+
+# Run tests with coverage report generation
+make test-coverage
 ```
 
-### Testing
+## Code Quality
 ```bash
-make test               # Run tests with race detection and coverage
-make test-coverage      # Run tests and generate HTML coverage report
-make test-all           # Run comprehensive test suite using test_runner.sh
-make test-race          # Run with race detector
-make bench              # Run benchmarks
+# Format code
+make fmt
+
+# Static analysis
+make vet
+
+# Run all quality checks (formatting, vet, lint, security, race tests)
+make check
+
+# Run quality checks with pre-commit hooks
+make check-all
 ```
 
-### Code Quality
+## Pre-commit Hooks
+The project uses pre-commit hooks with Go-specific checks:
 ```bash
-make fmt                # Format code
-make fmt-check          # Check if code is properly formatted
-make vet                # Run static analysis
-make check              # Run all quality checks (fmt-check, vet, lint, security, test-race)
+# Install pre-commit hooks
+make pre-commit-install
+
+# Run pre-commit on all files
+make pre-commit-run
 ```
 
-### Other Commands
+## Release and Cross-platform
 ```bash
-make clean              # Remove build artifacts and coverage files
-make release            # Create cross-platform release builds (Linux, macOS, Windows)
-make example            # Run example comparison demo
+# Create release builds for Linux, macOS, Windows
+make release
+
+# Install to $GOPATH/bin
+make install
 ```
 
-## Architecture Overview
+## Testing Individual Components
+```bash
+# Run specific test functions
+go test -run TestFunctionName -v
 
-This is a directory comparison tool that identifies differences between file sets using content-based comparison (SHA256 hashing). The tool is written in pure Go with no external dependencies.
+# Run benchmarks
+make bench
 
-### Core Components
+# Race condition testing
+make test-race
+```
 
-1. **FileInfo Structure** (main.go:14-21): Represents metadata about a file including path, hash, size, and source directory.
+# Development Workflow
 
-2. **FileSet Structure** (main.go:24-28): Collection of files with lookup maps for efficient searching by name and hash.
+1. Make changes to main.go or main_test.go
+2. Run `make fmt` to format code
+3. Run `make test` for quick validation
+4. Run `make check` for comprehensive quality checks before committing
+5. Use `make example` to test functionality with sample data
 
-3. **Comparison Logic** (main.go:125-166):
-   - Ignores files with identical content (same hash)
-   - Identifies files with same name but different content
-   - Identifies files unique to each set
+# Code Style Notes
 
-4. **Tree Building** (main.go:188-291):
-   - Smart tree structure that marks entire directories as missing when appropriate
-   - Removes empty directories from output
-   - Provides formatted tree visualization
-
-### Key Design Decisions
-
-- **Content-based comparison**: Uses SHA256 hashing instead of timestamps for accurate file comparison
-- **Multiple directory support**: Can compare sets of directories, not just single directories
-- **Smart output**: Tree visualization intelligently groups entire missing directories
-- **No external dependencies**: Uses only Go standard library for maximum portability
-
-### Testing Approach
-
-The project includes comprehensive unit tests in `main_test.go`. When adding new features:
-- Run `make test` to ensure all tests pass
-- Run `make test-coverage` to check coverage (target is >90%)
-- Use `make test-race` to detect race conditions
-- The `test_runner.sh` script provides a comprehensive test suite with colored output
+- All functionality is in main.go - avoid creating separate files unless absolutely necessary
+- Follow Go naming conventions and use `gofmt` formatting
+- Tests are comprehensive with high coverage requirements
+- Use the existing error handling patterns and logging approach
+- Performance is important - maintain concurrent processing patterns
