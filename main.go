@@ -59,11 +59,11 @@ type SpeedSample struct {
 
 // ProgressTracker tracks and displays progress during file processing
 type ProgressTracker struct {
-	totalFiles      int64
-	totalBytes      int64
-	processedFiles  int64 // atomic
-	processedBytes  int64 // atomic
-	startTime       time.Time
+	totalFiles     int64
+	totalBytes     int64
+	processedFiles int64 // atomic
+	processedBytes int64 // atomic
+	startTime      time.Time
 
 	// For 90-second rolling average
 	samples []SpeedSample

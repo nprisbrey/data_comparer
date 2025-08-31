@@ -6,6 +6,7 @@ repos:
       - id: go-fmt
         name: Go Format
         description: Runs gofmt to format Go source code
+        args: ['-w']  # -w flag writes changes to file
       - id: go-vet-mod
         name: Go Vet
         description: Runs go vet with modules support
