@@ -3170,10 +3170,11 @@ func TestHashWorker(t *testing.T) {
 
 		jobs := make(chan FileJob, 1)
 		results := make(chan FileResult, 1)
+		progress := make(chan ProgressUpdate, 10)
 		var wg sync.WaitGroup
 
 		wg.Add(1)
-		go hashWorker(jobs, results, &wg)
+		go hashWorker(jobs, results, progress, &wg)
 
 		jobs <- FileJob{
 			Files: []FileTask{{
@@ -3233,10 +3234,11 @@ func TestHashWorker(t *testing.T) {
 
 		jobs := make(chan FileJob, 1)
 		results := make(chan FileResult, 1)
+		progress := make(chan ProgressUpdate, 10)
 		var wg sync.WaitGroup
 
 		wg.Add(1)
-		go hashWorker(jobs, results, &wg)
+		go hashWorker(jobs, results, progress, &wg)
 
 		jobs <- FileJob{Files: tasks}
 		close(jobs)
@@ -3264,10 +3266,11 @@ func TestHashWorker(t *testing.T) {
 
 		jobs := make(chan FileJob, 1)
 		results := make(chan FileResult, 1)
+		progress := make(chan ProgressUpdate, 10)
 		var wg sync.WaitGroup
 
 		wg.Add(1)
-		go hashWorker(jobs, results, &wg)
+		go hashWorker(jobs, results, progress, &wg)
 
 		jobs <- FileJob{
 			Files: []FileTask{{
@@ -3322,7 +3325,7 @@ func TestProcessFilesSequentially(t *testing.T) {
 		})
 	}
 
-	fileSet, err := processFilesSequentially(tasks)
+	fileSet, err := processFilesSequentially(tasks, 1000)
 	if err != nil {
 		t.Fatalf("processFilesSequentially failed: %v", err)
 	}
@@ -3382,7 +3385,7 @@ func TestProcessFilesInParallel(t *testing.T) {
 		})
 	}
 
-	fileSet, err := processFilesInParallel(tasks)
+	fileSet, err := processFilesInParallel(tasks, 2500)
 	if err != nil {
 		t.Fatalf("processFilesInParallel failed: %v", err)
 	}
@@ -3413,7 +3416,7 @@ func TestProcessFilesInParallel(t *testing.T) {
 // Test edge cases for parallel processing
 func TestProcessFilesInParallelEdgeCases(t *testing.T) {
 	t.Run("empty task list", func(t *testing.T) {
-		fileSet, err := processFilesInParallel([]FileTask{})
+		fileSet, err := processFilesInParallel([]FileTask{}, 0)
 		if err != nil {
 			t.Fatalf("processFilesInParallel failed: %v", err)
 		}
@@ -3444,7 +3447,7 @@ func TestProcessFilesInParallelEdgeCases(t *testing.T) {
 			RelPath: filename,
 		}}
 
-		fileSet, err := processFilesInParallel(tasks)
+		fileSet, err := processFilesInParallel(tasks, info.Size())
 		if err != nil {
 			t.Fatalf("processFilesInParallel failed: %v", err)
 		}
@@ -3522,4 +3525,387 @@ func TestConcurrentWalkDirectories(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Test cases for Progress Tracking functionality
+
+func TestProgressTracker(t *testing.T) {
+	t.Run("basic creation and update", func(t *testing.T) {
+		tracker := NewProgressTracker(100, 1000)
+
+		if tracker.totalFiles != 100 {
+			t.Errorf("Expected totalFiles 100, got %d", tracker.totalFiles)
+		}
+		if tracker.totalBytes != 1000 {
+			t.Errorf("Expected totalBytes 1000, got %d", tracker.totalBytes)
+		}
+
+		// Check initial state
+		files, bytes, speed := tracker.GetStats()
+		if files != 0 {
+			t.Errorf("Expected initial files 0, got %d", files)
+		}
+		if bytes != 0 {
+			t.Errorf("Expected initial bytes 0, got %d", bytes)
+		}
+		if speed != 0 {
+			t.Errorf("Expected initial speed 0, got %f", speed)
+		}
+	})
+
+	t.Run("progress updates", func(t *testing.T) {
+		tracker := NewProgressTracker(10, 100)
+
+		tracker.UpdateProgress(3, 30)
+		files, bytes, _ := tracker.GetStats()
+
+		if files != 3 {
+			t.Errorf("Expected files 3, got %d", files)
+		}
+		if bytes != 30 {
+			t.Errorf("Expected bytes 30, got %d", bytes)
+		}
+
+		// Multiple updates should accumulate
+		tracker.UpdateProgress(2, 20)
+		files, bytes, _ = tracker.GetStats()
+
+		if files != 5 {
+			t.Errorf("Expected files 5, got %d", files)
+		}
+		if bytes != 50 {
+			t.Errorf("Expected bytes 50, got %d", bytes)
+		}
+	})
+
+	t.Run("speed calculation", func(t *testing.T) {
+		tracker := NewProgressTracker(100, 1000)
+
+		// Manually add samples to test speed calculation
+		tracker.samples = []SpeedSample{
+			{Timestamp: time.Now().Add(-2 * time.Second), Bytes: 0},
+			{Timestamp: time.Now(), Bytes: 2048 * 1024}, // 2MB in 2 seconds
+		}
+
+		tracker.UpdateProgress(10, 2048*1024)
+		_, _, speed := tracker.GetStats()
+
+		// Should be approximately 1 MB/s
+		if speed < 0.9 || speed > 1.1 {
+			t.Errorf("Expected speed ~1.0 MB/s, got %f", speed)
+		}
+	})
+
+	t.Run("sample cleanup", func(t *testing.T) {
+		tracker := NewProgressTracker(100, 1000)
+
+		// Add samples older than 90 seconds
+		oldTime := time.Now().Add(-95 * time.Second)
+		recentTime := time.Now().Add(-30 * time.Second)
+		tracker.samples = []SpeedSample{
+			{Timestamp: oldTime, Bytes: 100},
+			{Timestamp: recentTime, Bytes: 200},
+		}
+
+		// Call GetStats to trigger cleanup
+		_, _, _ = tracker.GetStats()
+
+		// Old samples should be removed, recent ones should remain
+		if len(tracker.samples) == 0 {
+			t.Error("Expected at least one sample to remain")
+		}
+
+		// Should not contain the 95-second old sample
+		hasOldSample := false
+		hasRecentSample := false
+		for _, sample := range tracker.samples {
+			if sample.Timestamp.Equal(oldTime) {
+				hasOldSample = true
+			}
+			if sample.Timestamp.Equal(recentTime) {
+				hasRecentSample = true
+			}
+		}
+
+		if hasOldSample {
+			t.Error("Expected old sample (95s ago) to be removed")
+		}
+		if !hasRecentSample {
+			t.Error("Expected recent sample (30s ago) to remain")
+		}
+	})
+}
+
+func TestProgressTrackerDisplayProgress(t *testing.T) {
+	t.Run("display formatting", func(t *testing.T) {
+		tracker := NewProgressTracker(200, 2000)
+		tracker.UpdateProgress(50, 500)
+
+		// Capture output
+		output := captureOutput(t, func() {
+			tracker.DisplayProgress("🔍 Testing... ")
+		})
+
+		// Check that output contains expected elements
+		if !strings.Contains(output, "🔍 Testing... ") {
+			t.Error("Expected output to contain prefix")
+		}
+		if !strings.Contains(output, "50/200") {
+			t.Error("Expected output to contain file progress")
+		}
+		if !strings.Contains(output, "(25%)") {
+			t.Error("Expected output to contain file percentage")
+		}
+		if !strings.Contains(output, "500 bytes/1.95 KB") {
+			t.Error("Expected output to contain size progress")
+		}
+		if !strings.Contains(output, "calculating...") {
+			t.Error("Expected output to contain speed placeholder")
+		}
+	})
+
+	t.Run("clear line", func(t *testing.T) {
+		tracker := NewProgressTracker(10, 100)
+
+		output := captureOutput(t, func() {
+			tracker.ClearLine()
+		})
+
+		// Should contain carriage return and spaces
+		if !strings.Contains(output, "\r") {
+			t.Error("Expected output to contain carriage return")
+		}
+	})
+}
+
+func TestHashWorkerWithProgress(t *testing.T) {
+	t.Run("worker sends progress updates", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create test files
+		files := []string{"test1.txt", "test2.txt", "test3.txt"}
+		var tasks []FileTask
+		var totalSize int64
+
+		for _, filename := range files {
+			filepath := filepath.Join(tmpDir, filename)
+			content := fmt.Sprintf("content for %s", filename)
+			err := os.WriteFile(filepath, []byte(content), 0o644)
+			if err != nil {
+				t.Fatalf("Failed to create test file: %v", err)
+			}
+
+			info, err := os.Stat(filepath)
+			if err != nil {
+				t.Fatalf("Failed to stat test file: %v", err)
+			}
+
+			tasks = append(tasks, FileTask{
+				Path:    filepath,
+				Info:    info,
+				RootDir: tmpDir,
+				RelPath: filename,
+			})
+			totalSize += info.Size()
+		}
+
+		// Create channels
+		jobs := make(chan FileJob, 1)
+		results := make(chan FileResult, 1)
+		progress := make(chan ProgressUpdate, 10)
+
+		// Start worker
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go hashWorker(jobs, results, progress, &wg)
+
+		// Send job
+		jobs <- FileJob{Files: tasks}
+		close(jobs)
+
+		// Collect progress update
+		var progressUpdate ProgressUpdate
+		select {
+		case progressUpdate = <-progress:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Expected progress update within 5 seconds")
+		}
+
+		// Collect result
+		var result FileResult
+		select {
+		case result = <-results:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Expected result within 5 seconds")
+		}
+
+		wg.Wait()
+
+		// Verify progress update
+		if progressUpdate.FilesProcessed != 3 {
+			t.Errorf("Expected 3 files processed, got %d", progressUpdate.FilesProcessed)
+		}
+		if progressUpdate.BytesProcessed != totalSize {
+			t.Errorf("Expected %d bytes processed, got %d", totalSize, progressUpdate.BytesProcessed)
+		}
+
+		// Verify result
+		if len(result.FileInfos) != 3 {
+			t.Errorf("Expected 3 file infos, got %d", len(result.FileInfos))
+		}
+		if len(result.Errors) != 0 {
+			t.Errorf("Expected 0 errors, got %d", len(result.Errors))
+		}
+	})
+
+	t.Run("worker handles file errors gracefully", func(t *testing.T) {
+		// Create task with non-existent file
+		tasks := []FileTask{{
+			Path:    "/nonexistent/file.txt",
+			Info:    &fakeFileInfo{name: "file.txt", size: 100},
+			RootDir: "/nonexistent",
+			RelPath: "file.txt",
+		}}
+
+		jobs := make(chan FileJob, 1)
+		results := make(chan FileResult, 1)
+		progress := make(chan ProgressUpdate, 10)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go hashWorker(jobs, results, progress, &wg)
+
+		jobs <- FileJob{Files: tasks}
+		close(jobs)
+
+		// Should get result even with error
+		select {
+		case result := <-results:
+			if len(result.Errors) != 1 {
+				t.Errorf("Expected 1 error, got %d", len(result.Errors))
+			}
+			if len(result.FileInfos) != 0 {
+				t.Errorf("Expected 0 file infos, got %d", len(result.FileInfos))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Expected result within 5 seconds")
+		}
+
+		// Progress update should not be sent for failed files
+		select {
+		case update := <-progress:
+			if update.FilesProcessed != 0 {
+				t.Errorf("Expected 0 files processed for failed file, got %d", update.FilesProcessed)
+			}
+		default:
+			// No progress update is also acceptable for failed files
+		}
+
+		wg.Wait()
+	})
+}
+
+func TestProcessFilesInParallelWithProgress(t *testing.T) {
+	t.Run("parallel processing with progress tracking", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create enough files to trigger parallel processing
+		var tasks []FileTask
+		var totalSize int64
+
+		for i := 0; i < 25; i++ {
+			filename := fmt.Sprintf("file%d.txt", i)
+			filepath := filepath.Join(tmpDir, filename)
+			content := fmt.Sprintf("content for file %d", i)
+
+			err := os.WriteFile(filepath, []byte(content), 0o644)
+			if err != nil {
+				t.Fatalf("Failed to create test file: %v", err)
+			}
+
+			info, err := os.Stat(filepath)
+			if err != nil {
+				t.Fatalf("Failed to stat test file: %v", err)
+			}
+
+			tasks = append(tasks, FileTask{
+				Path:    filepath,
+				Info:    info,
+				RootDir: tmpDir,
+				RelPath: filename,
+			})
+			totalSize += info.Size()
+		}
+
+		// Process files
+		fileSet, err := processFilesInParallel(tasks, totalSize)
+		if err != nil {
+			t.Fatalf("processFilesInParallel failed: %v", err)
+		}
+
+		// Verify results
+		if len(fileSet.Files) != 25 {
+			t.Errorf("Expected 25 files, got %d", len(fileSet.Files))
+		}
+
+		// Verify all files are properly hashed
+		for _, file := range fileSet.Files {
+			if file.Hash == "" {
+				t.Error("Expected non-empty hash")
+			}
+			if file.Size == 0 {
+				t.Error("Expected non-zero size")
+			}
+		}
+	})
+}
+
+func TestWalkDirectoriesWithLimitProgress(t *testing.T) {
+	t.Run("walk directories calculates total size", func(t *testing.T) {
+		structure := map[string]string{
+			"file1.txt": "content1",
+			"file2.txt": "content with more text",
+			"file3.txt": "short",
+		}
+		tmpDir := createTempDir(t, structure)
+
+		fileSet, err := walkDirectories([]string{tmpDir})
+		if err != nil {
+			t.Fatalf("walkDirectories failed: %v", err)
+		}
+
+		// Calculate expected total size
+		var expectedSize int64
+		for _, content := range structure {
+			expectedSize += int64(len(content))
+		}
+
+		// Verify sizes are captured
+		var actualSize int64
+		for _, file := range fileSet.Files {
+			actualSize += file.Size
+		}
+
+		if actualSize != expectedSize {
+			t.Errorf("Expected total size %d, got %d", expectedSize, actualSize)
+		}
+	})
+
+	t.Run("walk directories with limit", func(t *testing.T) {
+		structure := make(map[string]string)
+		for i := 0; i < 50; i++ {
+			structure[fmt.Sprintf("file%d.txt", i)] = fmt.Sprintf("content%d", i)
+		}
+		tmpDir := createTempDir(t, structure)
+
+		fileSet, err := walkDirectoriesWithLimit([]string{tmpDir}, 10)
+		if err != nil {
+			t.Fatalf("walkDirectoriesWithLimit failed: %v", err)
+		}
+
+		// Should have exactly 10 files due to limit
+		if len(fileSet.Files) != 10 {
+			t.Errorf("Expected 10 files due to limit, got %d", len(fileSet.Files))
+		}
+	})
 }

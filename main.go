@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // FileInfo represents metadata about a file
@@ -47,6 +49,106 @@ type TreeNode struct {
 	Children    map[string]*TreeNode
 	Parent      *TreeNode
 	IsEntireDir bool // True if this entire directory is missing
+}
+
+// SpeedSample represents a point-in-time measurement for speed calculation
+type SpeedSample struct {
+	Timestamp time.Time
+	Bytes     int64
+}
+
+// ProgressTracker tracks and displays progress during file processing
+type ProgressTracker struct {
+	totalFiles      int64
+	totalBytes      int64
+	processedFiles  int64 // atomic
+	processedBytes  int64 // atomic
+	startTime       time.Time
+
+	// For 90-second rolling average
+	samples []SpeedSample
+	mu      sync.Mutex
+}
+
+// ProgressUpdate represents a single progress update from workers
+type ProgressUpdate struct {
+	FilesProcessed int64
+	BytesProcessed int64
+}
+
+// NewProgressTracker creates a new progress tracker
+func NewProgressTracker(totalFiles int64, totalBytes int64) *ProgressTracker {
+	return &ProgressTracker{
+		totalFiles: totalFiles,
+		totalBytes: totalBytes,
+		startTime:  time.Now(),
+		samples:    make([]SpeedSample, 0),
+	}
+}
+
+// UpdateProgress atomically updates the progress counters
+func (pt *ProgressTracker) UpdateProgress(files int64, bytes int64) {
+	atomic.AddInt64(&pt.processedFiles, files)
+	atomic.AddInt64(&pt.processedBytes, bytes)
+}
+
+// GetStats returns current progress statistics
+func (pt *ProgressTracker) GetStats() (filesProcessed, bytesProcessed int64, speedMBps float64) {
+	filesProcessed = atomic.LoadInt64(&pt.processedFiles)
+	bytesProcessed = atomic.LoadInt64(&pt.processedBytes)
+
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	now := time.Now()
+	currentBytes := bytesProcessed
+
+	// Add current sample
+	pt.samples = append(pt.samples, SpeedSample{Timestamp: now, Bytes: currentBytes})
+
+	// Remove samples older than 90 seconds
+	cutoff := now.Add(-90 * time.Second)
+	for len(pt.samples) > 0 && pt.samples[0].Timestamp.Before(cutoff) {
+		pt.samples = pt.samples[1:]
+	}
+
+	// Calculate speed if we have enough data
+	if len(pt.samples) >= 2 {
+		oldest := pt.samples[0]
+		newest := pt.samples[len(pt.samples)-1]
+		timeDiff := newest.Timestamp.Sub(oldest.Timestamp).Seconds()
+		bytesDiff := newest.Bytes - oldest.Bytes
+
+		if timeDiff > 0 {
+			speedMBps = float64(bytesDiff) / (1024 * 1024) / timeDiff
+		}
+	}
+
+	return filesProcessed, bytesProcessed, speedMBps
+}
+
+// DisplayProgress shows the current progress line
+func (pt *ProgressTracker) DisplayProgress(prefix string) {
+	filesProcessed, bytesProcessed, speedMBps := pt.GetStats()
+
+	filePercent := float64(filesProcessed) / float64(pt.totalFiles) * 100
+	bytePercent := float64(bytesProcessed) / float64(pt.totalBytes) * 100
+
+	speedText := "calculating..."
+	if speedMBps > 0 {
+		speedText = fmt.Sprintf("%.1f MB/s", speedMBps)
+	}
+
+	fmt.Printf("\r%s Files: %d/%d (%.0f%%) | Size: %s/%s (%.0f%%) | Speed: %s",
+		prefix,
+		filesProcessed, pt.totalFiles, filePercent,
+		formatSize(bytesProcessed), formatSize(pt.totalBytes), bytePercent,
+		speedText)
+}
+
+// ClearLine clears the current progress line
+func (pt *ProgressTracker) ClearLine() {
+	fmt.Print("\r" + strings.Repeat(" ", 100) + "\r")
 }
 
 // hashFile calculates SHA256 hash of a file
@@ -86,7 +188,7 @@ type FileResult struct {
 }
 
 // hashWorker processes batches of files from the job channel
-func hashWorker(jobs <-chan FileJob, results chan<- FileResult, wg *sync.WaitGroup) {
+func hashWorker(jobs <-chan FileJob, results chan<- FileResult, progress chan<- ProgressUpdate, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for job := range jobs {
@@ -94,6 +196,9 @@ func hashWorker(jobs <-chan FileJob, results chan<- FileResult, wg *sync.WaitGro
 			FileInfos: make([]*FileInfo, 0, len(job.Files)),
 			Errors:    make([]error, 0),
 		}
+
+		var batchFiles int64 = 0
+		var batchBytes int64 = 0
 
 		for _, task := range job.Files {
 			hash, err := hashFile(task.Path)
@@ -113,6 +218,17 @@ func hashWorker(jobs <-chan FileJob, results chan<- FileResult, wg *sync.WaitGro
 			}
 
 			batch.FileInfos = append(batch.FileInfos, fileInfo)
+			batchFiles++
+			batchBytes += task.Info.Size()
+		}
+
+		// Send progress update for this batch
+		if progress != nil {
+			select {
+			case progress <- ProgressUpdate{FilesProcessed: batchFiles, BytesProcessed: batchBytes}:
+			default:
+				// Don't block if progress channel is full
+			}
 		}
 
 		results <- batch
@@ -129,6 +245,7 @@ func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
 	// First, collect all files to determine if parallelization is worthwhile
 	var allTasks []FileTask
 	taskCount := 0
+	var totalSize int64
 
 	for _, dir := range dirs {
 		// Check if directory exists
@@ -166,6 +283,7 @@ func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
 			}
 
 			allTasks = append(allTasks, task)
+			totalSize += info.Size()
 			return nil
 		})
 		if err != nil {
@@ -178,20 +296,21 @@ func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
 	const minFilesForParallelization = 20
 	if len(allTasks) < minFilesForParallelization {
 		// Process sequentially for small workloads
-		return processFilesSequentially(allTasks)
+		return processFilesSequentially(allTasks, totalSize)
 	}
 
-	return processFilesInParallel(allTasks)
+	return processFilesInParallel(allTasks, totalSize)
 }
 
 // processFilesSequentially handles small workloads without goroutine overhead
-func processFilesSequentially(tasks []FileTask) (*FileSet, error) {
+func processFilesSequentially(tasks []FileTask, totalSize int64) (*FileSet, error) {
 	fileSet := &FileSet{
 		Files:   make([]*FileInfo, 0, len(tasks)),
 		NameMap: make(map[string][]*FileInfo),
 		HashMap: make(map[string][]*FileInfo),
 	}
 
+	// For small workloads, don't show progress tracking
 	for _, task := range tasks {
 		hash, err := hashFile(task.Path)
 		if err != nil {
@@ -217,7 +336,7 @@ func processFilesSequentially(tasks []FileTask) (*FileSet, error) {
 }
 
 // processFilesInParallel handles large workloads with optimal parallelization
-func processFilesInParallel(tasks []FileTask) (*FileSet, error) {
+func processFilesInParallel(tasks []FileTask, totalSize int64) (*FileSet, error) {
 	// Use 75% of CPU cores as requested
 	numWorkers := int(float64(runtime.NumCPU()) * 0.75)
 	if numWorkers < 1 {
@@ -242,15 +361,40 @@ func processFilesInParallel(tasks []FileTask) (*FileSet, error) {
 		jobs = append(jobs, FileJob{Files: tasks[i:end]})
 	}
 
+	// Create progress tracker
+	progressTracker := NewProgressTracker(int64(len(tasks)), totalSize)
+
 	// Create channels with appropriate buffer sizes
 	jobChannel := make(chan FileJob, len(jobs))
 	resultChannel := make(chan FileResult, len(jobs))
+	progressChannel := make(chan ProgressUpdate, numWorkers*10) // Buffer for progress updates
+
+	// Start progress display goroutine
+	progressDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond) // Update 5 times per second
+		defer ticker.Stop()
+
+		for {
+			select {
+			case update, ok := <-progressChannel:
+				if !ok {
+					return // Channel closed, we're done
+				}
+				progressTracker.UpdateProgress(update.FilesProcessed, update.BytesProcessed)
+			case <-ticker.C:
+				progressTracker.DisplayProgress("🔍 Analyzing files... ")
+			case <-progressDone:
+				return
+			}
+		}
+	}()
 
 	// Start workers
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go hashWorker(jobChannel, resultChannel, &wg)
+		go hashWorker(jobChannel, resultChannel, progressChannel, &wg)
 	}
 
 	// Send jobs to workers
@@ -261,10 +405,11 @@ func processFilesInParallel(tasks []FileTask) (*FileSet, error) {
 		close(jobChannel)
 	}()
 
-	// Close result channel when all workers are done
+	// Close channels when all workers are done
 	go func() {
 		wg.Wait()
 		close(resultChannel)
+		close(progressChannel)
 	}()
 
 	// Collect results
@@ -274,7 +419,13 @@ func processFilesInParallel(tasks []FileTask) (*FileSet, error) {
 		HashMap: make(map[string][]*FileInfo),
 	}
 
+	resultCount := 0
 	for result := range resultChannel {
+		// Clear progress line before printing warnings
+		if len(result.Errors) > 0 {
+			progressTracker.ClearLine()
+		}
+
 		// Handle errors
 		for _, err := range result.Errors {
 			fmt.Printf("Warning: %v\n", err)
@@ -286,7 +437,13 @@ func processFilesInParallel(tasks []FileTask) (*FileSet, error) {
 			fileSet.NameMap[fileInfo.Name] = append(fileSet.NameMap[fileInfo.Name], fileInfo)
 			fileSet.HashMap[fileInfo.Hash] = append(fileSet.HashMap[fileInfo.Hash], fileInfo)
 		}
+
+		resultCount++
 	}
+
+	// Stop progress display and clear the line
+	close(progressDone)
+	progressTracker.ClearLine()
 
 	return fileSet, nil
 }
