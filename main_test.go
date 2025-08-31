@@ -33,13 +33,13 @@ func createTempDir(t TestingT, structure map[string]string) string {
 		dir := filepath.Dir(fullPath)
 
 		// Create directory structure
-		err := os.MkdirAll(dir, 0755)
+		err := os.MkdirAll(dir, 0o755)
 		if err != nil {
 			t.Fatalf("Failed to create directory %s: %v", dir, err)
 		}
 
 		// Create file with content
-		err = os.WriteFile(fullPath, []byte(content), 0644)
+		err = os.WriteFile(fullPath, []byte(content), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create file %s: %v", fullPath, err)
 		}
@@ -61,7 +61,7 @@ func captureOutput(t *testing.T, fn func()) string {
 	os.Stdout = originalStdout
 
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	_, _ = io.Copy(&buf, r) // Ignore error for test output capture
 	return buf.String()
 }
 
@@ -100,7 +100,7 @@ func TestHashFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create temporary file
 			tmpFile := filepath.Join(t.TempDir(), "testfile")
-			err := os.WriteFile(tmpFile, []byte(tt.content), 0644)
+			err := os.WriteFile(tmpFile, []byte(tt.content), 0o644)
 			if err != nil {
 				t.Fatalf("Failed to create test file: %v", err)
 			}
@@ -692,7 +692,7 @@ func BenchmarkHashFile(b *testing.B) {
 	// Create a temporary file with some content
 	tmpFile := filepath.Join(b.TempDir(), "benchmark.txt")
 	content := strings.Repeat("benchmark content\n", 1000)
-	err := os.WriteFile(tmpFile, []byte(content), 0644)
+	err := os.WriteFile(tmpFile, []byte(content), 0o644)
 	if err != nil {
 		b.Fatalf("Failed to create benchmark file: %v", err)
 	}
@@ -1020,7 +1020,7 @@ func TestWalkDirectoriesErrorPaths(t *testing.T) {
 
 		// Create a file that will cause issues during walk
 		problematicFile := filepath.Join(tmpDir, "test.txt")
-		err := os.WriteFile(problematicFile, []byte("content"), 0644)
+		err := os.WriteFile(problematicFile, []byte("content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -1040,7 +1040,7 @@ func TestWalkDirectoriesErrorPaths(t *testing.T) {
 	t.Run("relative path error handling", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		testFile := filepath.Join(tmpDir, "test.txt")
-		err := os.WriteFile(testFile, []byte("content"), 0644)
+		err := os.WriteFile(testFile, []byte("content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -1311,7 +1311,7 @@ func TestWalkDirectoriesCompleteErrorCoverage(t *testing.T) {
 
 		// Create a regular file
 		testFile := filepath.Join(tmpDir, "test.txt")
-		err := os.WriteFile(testFile, []byte("test content"), 0644)
+		err := os.WriteFile(testFile, []byte("test content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -1335,7 +1335,7 @@ func TestWalkDirectoriesCompleteErrorCoverage(t *testing.T) {
 		// Test case where filepath.Rel might fail
 		tmpDir := t.TempDir()
 		testFile := filepath.Join(tmpDir, "test.txt")
-		err := os.WriteFile(testFile, []byte("content"), 0644)
+		err := os.WriteFile(testFile, []byte("content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -1679,8 +1679,8 @@ func TestPrintTreeEdgeCases(t *testing.T) {
 		})
 
 		// Should not crash, might produce minimal output
-		if len(output) < 0 { // Just ensuring it doesn't crash
-			t.Error("Should handle empty tree")
+		if len(output) == 0 { // Check if output is empty
+			t.Log("Empty output as expected for empty tree")
 		}
 	})
 
@@ -1819,7 +1819,7 @@ func TestSymlinksAndSpecialFiles(t *testing.T) {
 
 		// Create a regular file
 		regularFile := filepath.Join(tmpDir, "regular.txt")
-		err := os.WriteFile(regularFile, []byte("regular content"), 0644)
+		err := os.WriteFile(regularFile, []byte("regular content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create regular file: %v", err)
 		}
@@ -1894,18 +1894,18 @@ func TestErrorPropagation(t *testing.T) {
 
 		// Create a file we'll make unreadable
 		unreadableFile := filepath.Join(tmpDir, "unreadable.txt")
-		err := os.WriteFile(unreadableFile, []byte("content"), 0644)
+		err := os.WriteFile(unreadableFile, []byte("content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
 
 		// Make file unreadable (on Unix systems)
 		if os.PathSeparator == '/' {
-			err = os.Chmod(unreadableFile, 0000)
+			err = os.Chmod(unreadableFile, 0o000)
 			if err != nil {
 				t.Logf("Could not change file permissions: %v", err)
 			} else {
-				defer os.Chmod(unreadableFile, 0644) // Restore for cleanup
+				defer func() { _ = os.Chmod(unreadableFile, 0o644) }() // Restore for cleanup
 			}
 		}
 
@@ -1921,7 +1921,7 @@ func TestErrorPropagation(t *testing.T) {
 
 		// Should see a warning about the unreadable file (on systems where chmod works)
 		if os.PathSeparator == '/' && strings.Contains(output, "Warning") {
-			// Good, warning was printed
+			t.Log("Warning was printed as expected for unreadable file")
 		}
 	})
 }
@@ -2209,7 +2209,7 @@ func TestWalkDirectoriesAdditional(t *testing.T) {
 
 		// Create a directory and then remove it to cause an error
 		testDir := filepath.Join(tmpDir, "testdir")
-		err := os.Mkdir(testDir, 0755)
+		err := os.Mkdir(testDir, 0o755)
 		if err != nil {
 			t.Fatalf("Failed to create test directory: %v", err)
 		}
@@ -2238,7 +2238,7 @@ func TestWalkDirectoriesAdditional(t *testing.T) {
 
 		// Create a file that will trigger an error during walk
 		problemFile := filepath.Join(tmpDir, "problem")
-		err := os.WriteFile(problemFile, []byte("test"), 0644)
+		err := os.WriteFile(problemFile, []byte("test"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create problem file: %v", err)
 		}
@@ -2247,11 +2247,11 @@ func TestWalkDirectoriesAdditional(t *testing.T) {
 		output := captureOutput(t, func() {
 			// Create a subdirectory that will be difficult to process
 			subdir := filepath.Join(tmpDir, "subdir")
-			os.Mkdir(subdir, 0755)
+			_ = os.Mkdir(subdir, 0o755) // Ignore error for test setup
 
 			// Create a file in the subdirectory
 			subfile := filepath.Join(subdir, "file.txt")
-			os.WriteFile(subfile, []byte("content"), 0644)
+			_ = os.WriteFile(subfile, []byte("content"), 0o644) // Ignore error for test setup
 
 			// Now walk the directory - should process normally
 			fileSet, err := walkDirectories([]string{tmpDir})
@@ -2272,7 +2272,7 @@ func TestWalkDirectoriesAdditional(t *testing.T) {
 		// This test simulates a scenario where filepath.Rel might return an error
 		tmpDir := t.TempDir()
 		testFile := filepath.Join(tmpDir, "test.txt")
-		err := os.WriteFile(testFile, []byte("content"), 0644)
+		err := os.WriteFile(testFile, []byte("content"), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -2414,7 +2414,7 @@ func TestReadYesNo(t *testing.T) {
 			// Write the input to the pipe
 			go func() {
 				defer w.Close()
-				w.Write([]byte(tt.input + "\n"))
+				_, _ = w.Write([]byte(tt.input + "\n")) // Ignore error for test input
 			}()
 
 			// Capture stdout to avoid printing during tests
@@ -2712,7 +2712,7 @@ func TestReadUserInput(t *testing.T) {
 			// Write the input to the pipe
 			go func() {
 				defer w.Close()
-				w.Write([]byte(tt.input + "\n"))
+				_, _ = w.Write([]byte(tt.input + "\n")) // Ignore error for test input
 			}()
 
 			// Capture stdout to avoid printing during tests
@@ -2752,7 +2752,7 @@ func TestWindowsPressEnterFunctionality(t *testing.T) {
 
 	go func() {
 		defer w.Close()
-		w.Write([]byte("\n")) // Simulate Enter key
+		_, _ = w.Write([]byte("\n")) // Simulate Enter key, ignore error for test
 	}()
 
 	// Test the scanner functionality
@@ -3158,7 +3158,7 @@ func TestHashWorker(t *testing.T) {
 		tmpDir := t.TempDir()
 		testFile := filepath.Join(tmpDir, "test.txt")
 		content := "test content"
-		err := os.WriteFile(testFile, []byte(content), 0644)
+		err := os.WriteFile(testFile, []byte(content), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -3213,7 +3213,7 @@ func TestHashWorker(t *testing.T) {
 			filename := fmt.Sprintf("test%d.txt", i)
 			filepath := filepath.Join(tmpDir, filename)
 			content := fmt.Sprintf("test content %d", i)
-			err := os.WriteFile(filepath, []byte(content), 0644)
+			err := os.WriteFile(filepath, []byte(content), 0o644)
 			if err != nil {
 				t.Fatalf("Failed to create test file %d: %v", i, err)
 			}
@@ -3304,7 +3304,7 @@ func TestProcessFilesSequentially(t *testing.T) {
 		filename := fmt.Sprintf("test%d.txt", i)
 		filepath := filepath.Join(tmpDir, filename)
 		content := fmt.Sprintf("content %d", i)
-		err := os.WriteFile(filepath, []byte(content), 0644)
+		err := os.WriteFile(filepath, []byte(content), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file %d: %v", i, err)
 		}
@@ -3364,7 +3364,7 @@ func TestProcessFilesInParallel(t *testing.T) {
 		filename := fmt.Sprintf("test%d.txt", i)
 		filepath := filepath.Join(tmpDir, filename)
 		content := fmt.Sprintf("content %d", i)
-		err := os.WriteFile(filepath, []byte(content), 0644)
+		err := os.WriteFile(filepath, []byte(content), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file %d: %v", i, err)
 		}
@@ -3427,7 +3427,7 @@ func TestProcessFilesInParallelEdgeCases(t *testing.T) {
 		filename := "single.txt"
 		filepath := filepath.Join(tmpDir, filename)
 		content := "single content"
-		err := os.WriteFile(filepath, []byte(content), 0644)
+		err := os.WriteFile(filepath, []byte(content), 0o644)
 		if err != nil {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
@@ -3462,7 +3462,7 @@ type fakeFileInfo struct {
 
 func (f *fakeFileInfo) Name() string       { return f.name }
 func (f *fakeFileInfo) Size() int64        { return f.size }
-func (f *fakeFileInfo) Mode() os.FileMode  { return 0644 }
+func (f *fakeFileInfo) Mode() os.FileMode  { return 0o644 }
 func (f *fakeFileInfo) ModTime() time.Time { return time.Now() }
 func (f *fakeFileInfo) IsDir() bool        { return false }
 func (f *fakeFileInfo) Sys() interface{}   { return nil }

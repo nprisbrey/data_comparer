@@ -51,6 +51,7 @@ type TreeNode struct {
 
 // hashFile calculates SHA256 hash of a file
 func hashFile(filePath string) (string, error) {
+	// #nosec G304 - filePath is intentionally user-provided for file comparison tool
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
@@ -167,7 +168,6 @@ func walkDirectoriesWithLimit(dirs []string, limit int) (*FileSet, error) {
 			allTasks = append(allTasks, task)
 			return nil
 		})
-
 		if err != nil {
 			return nil, fmt.Errorf("error walking directory %s: %v", dir, err)
 		}
@@ -403,21 +403,6 @@ func buildSmartTree(files []*FileInfo, sourceSet *FileSet, otherSet *FileSet) *T
 	removeEmptyDirectories(root)
 
 	return root
-}
-
-// collectAllFilesUnderNode collects all files under a given tree node (including subdirectories)
-func collectAllFilesUnderNode(node *TreeNode) []*FileInfo {
-	var files []*FileInfo
-
-	// Add files from this node
-	files = append(files, node.Files...)
-
-	// Recursively add files from all children
-	for _, child := range node.Children {
-		files = append(files, collectAllFilesUnderNode(child)...)
-	}
-
-	return files
 }
 
 // markEntireDirectoriesNew is the new implementation that properly handles partial matches

@@ -6,7 +6,7 @@ A fast, intelligent directory comparison tool written in Go that identifies diff
 
 - **Content-based comparison**: Uses SHA256 hashing to detect actual file differences, not just timestamps
 - **Smart tree visualization**: Displays results in an intuitive tree format with directory structure
-- **Multiple comparison modes**: 
+- **Multiple comparison modes**:
   - Files with same names but different content
   - Files unique to each directory set
   - Optional reverse comparison (files unique to first set)
@@ -76,7 +76,7 @@ make release
 
 This creates:
 - `dir-compare-linux-amd64` (Linux 64-bit)
-- `dir-compare-darwin-amd64` (macOS 64-bit)  
+- `dir-compare-darwin-amd64` (macOS 64-bit)
 - `dir-compare-windows-amd64.exe` (Windows 64-bit)
 
 ### Build for Specific Platforms
@@ -191,7 +191,7 @@ This project uses only Go standard library - no external dependencies required.
 
 1. **File Discovery**: Recursively walks directory trees to find all files
 2. **Content Hashing**: Calculates SHA256 hash for each file's content
-3. **Intelligent Comparison**: 
+3. **Intelligent Comparison**:
    - Files with identical hashes are considered the same (ignored)
    - Files with same names but different hashes are flagged as modified
    - Files with no name or content match are marked as unique

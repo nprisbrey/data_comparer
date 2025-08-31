@@ -109,10 +109,47 @@ security:
 		echo "⚠️  gosec not installed. Run: go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest"; \
 	fi
 
+# Pre-commit hooks
+.PHONY: pre-commit-install
+pre-commit-install:
+	@echo "🪝 Installing pre-commit hooks..."
+	@if command -v pre-commit >/dev/null 2>&1; then \
+		pre-commit install; \
+		echo "✅ Pre-commit hooks installed"; \
+	else \
+		echo "❌ pre-commit not found. Install with: pip install pre-commit"; \
+		exit 1; \
+	fi
+
+.PHONY: pre-commit-run
+pre-commit-run:
+	@echo "🪝 Running pre-commit hooks on all files..."
+	@if command -v pre-commit >/dev/null 2>&1; then \
+		pre-commit run --all-files; \
+	else \
+		echo "❌ pre-commit not found. Install with: pip install pre-commit"; \
+		exit 1; \
+	fi
+
+.PHONY: pre-commit-update
+pre-commit-update:
+	@echo "🪝 Updating pre-commit hooks..."
+	@if command -v pre-commit >/dev/null 2>&1; then \
+		pre-commit autoupdate; \
+	else \
+		echo "❌ pre-commit not found. Install with: pip install pre-commit"; \
+		exit 1; \
+	fi
+
 # Full quality check
 .PHONY: check
 check: fmt-check vet lint security test-race
 	@echo "✅ All quality checks passed!"
+
+# Full quality check with pre-commit
+.PHONY: check-all
+check-all: pre-commit-run check
+	@echo "✅ All quality checks and pre-commit hooks passed!"
 
 # Install the binary to $GOPATH/bin
 .PHONY: install
@@ -169,6 +206,12 @@ help:
 	@echo "  lint           Run linter (requires golangci-lint)"
 	@echo "  security       Run security check (requires gosec)"
 	@echo "  check          Run all quality checks"
+	@echo "  check-all      Run quality checks and pre-commit hooks"
+	@echo ""
+	@echo "Pre-commit:"
+	@echo "  pre-commit-install  Install pre-commit hooks"
+	@echo "  pre-commit-run      Run pre-commit hooks on all files"
+	@echo "  pre-commit-update   Update pre-commit hook versions"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  clean          Clean build artifacts"

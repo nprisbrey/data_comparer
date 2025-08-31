@@ -1,0 +1,67 @@
+repos:
+  # Go-specific hooks (actively maintained alternative)
+  - repo: https://github.com/TekWizely/pre-commit-golang
+    rev: v1.0.0-rc.2
+    hooks:
+      - id: go-fmt
+        name: Go Format
+        description: Runs gofmt to format Go source code
+      - id: go-vet-mod
+        name: Go Vet
+        description: Runs go vet with modules support
+      - id: go-mod-tidy
+        name: Go Mod Tidy
+        description: Runs go mod tidy to clean up dependencies
+      - id: go-test-mod
+        name: Go Unit Tests
+        description: Runs unit tests for modified packages
+      - id: go-build-mod
+        name: Go Build
+        description: Runs go build to check compilation
+      - id: golangci-lint-mod
+        name: golangci-lint
+        description: Fast Go linters runner (includes deadcode detection)
+      - id: go-sec-mod
+        name: Go Security
+        description: Security vulnerability scanner for Go
+
+  # General hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+      - id: end-of-file-fixer
+        name: Fix End of Files
+      - id: check-yaml
+        name: Check YAML
+      - id: check-json
+        name: Check JSON
+      - id: check-added-large-files
+        name: Check for Large Files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+        name: Check for Merge Conflicts
+      - id: mixed-line-ending
+        name: Mixed Line Ending
+
+  # Local custom hooks
+  - repo: local
+    hooks:
+      - id: go-no-replacement
+        name: No Replace Directives
+        entry: bash -c 'if grep -q "^replace " go.mod; then echo "go.mod contains replace directives"; exit 1; fi'
+        language: system
+        files: go.mod
+        pass_filenames: false
+
+      - id: go-check-todos
+        name: Check TODOs/FIXMEs
+        entry: bash -c 'if git diff --cached --name-only | xargs grep -l "TODO\|FIXME" 2>/dev/null; then echo "Found TODO/FIXME comments in staged files. Consider addressing them."; exit 0; fi'
+        language: system
+        pass_filenames: false
+        verbose: true
+
+# Configuration
+default_stages: [commit]
+fail_fast: false

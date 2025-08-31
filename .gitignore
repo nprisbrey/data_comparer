@@ -1,3 +1,6 @@
 coverage.*
 # Release files
-dir-compare-*
+dir-compare*
+
+# Pre-commit
+.pre-commit/

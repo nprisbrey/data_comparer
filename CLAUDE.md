@@ -44,7 +44,7 @@ This is a directory comparison tool that identifies differences between file set
 
 2. **FileSet Structure** (main.go:24-28): Collection of files with lookup maps for efficient searching by name and hash.
 
-3. **Comparison Logic** (main.go:125-166): 
+3. **Comparison Logic** (main.go:125-166):
    - Ignores files with identical content (same hash)
    - Identifies files with same name but different content
    - Identifies files unique to each set
